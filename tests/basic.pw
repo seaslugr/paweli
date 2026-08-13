@@ -1,0 +1,8 @@
+fn test_function(string input) {
+	print(input);
+}
+
+fn main() {
+	print("Hello World!");
+	test_function("Function Call");
+}

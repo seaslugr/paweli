@@ -1,0 +1,21 @@
+fn main() {
+	assert(1 + 2 == 3);
+	assert(10 - 4 == 6);
+	assert(3 * 4 == 12);
+	assert(10 / 3 == 3);
+	assert(10 % 3 == 1);
+	assert(1 + 2 * 3 - 4 / 2 == 5, "precedence: * and / bind tighter than + and -");
+	assert(-7 + 7 == 0);
+
+	assert(2.5 + 2.5 == 5.0);
+	assert(3.0 * 2 == 6.0, "int should promote to float");
+
+	assert(1 < 2 && 2 <= 2 && 3 > 2 && 3 >= 3);
+	assert(1 != 2);
+	assert(!(1 == 2));
+
+	assert(true && false || true, "&& binds tighter than ||");
+	assert(!(false && true));
+
+	print("arithmetic: ok");
+}

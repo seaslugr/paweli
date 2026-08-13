@@ -1,0 +1,44 @@
+fn add(int a, int b) -> int {
+	return a + b;
+}
+
+fn recurse(int n) -> int {
+	if (n <= 0) {
+		return 0;
+	}
+	return 1 + recurse(n - 1);
+}
+
+fn no_return() {
+	int x = 1;
+}
+
+fn early_return(int n) -> int {
+	if (n < 0) {
+		return -1;
+	}
+	return n;
+}
+
+fn shadow_test() -> int {
+	int x = 1;
+	{
+		int x = 2;
+		assert(x == 2);
+	}
+	return x;
+}
+
+fn main() {
+	assert(add(2, 3) == 5);
+	assert(recurse(50) == 50);
+
+	assert(no_return() == null, "a function with no explicit return should evaluate to null");
+
+	assert(early_return(-5) == -1);
+	assert(early_return(5) == 5);
+
+	assert(shadow_test() == 1, "outer x should be unaffected by the inner shadowed x");
+
+	print("functions: ok");
+}

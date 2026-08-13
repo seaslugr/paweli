@@ -1,0 +1,33 @@
+/// Example2 of  "paweli".
+	The standard library!
+///
+#module "stdlib"
+
+fn main() {
+	print("Examples of the standard library");
+
+	// math
+	int sum = stdlib.abs(-7);
+	int biggest = stdlib.max(3, 9);
+	int smallest = stdlib.min(3, 9);
+	float root = stdlib.sqrt(16.0);
+	print(sum);
+	print(biggest);
+	print(smallest);
+	print(root);
+
+	// strings
+	string name = "paweli";
+	int name_len = stdlib.length(name);
+	string shout = stdlib.to_upper(name);
+	string greeting = stdlib.concat("hello, ", name);
+	print(name_len);
+	print(shout);
+	print(greeting);
+
+	// type conversion
+	string as_text = stdlib.to_string(42);
+	int as_number = stdlib.to_int("42");
+	print(as_text);
+	print(as_number);
+}

@@ -1,0 +1,25 @@
+{
+	"name": "tree-sitter-paweli",
+	"version": "0.1.0",
+	"description": "Tree-sitter grammar for the paweli language",
+	"main": "bindings/node",
+	"scripts": {
+		"generate": "tree-sitter generate",
+		"test": "tree-sitter test"
+	},
+	"devDependencies": {
+		"tree-sitter-cli": "^0.25.0"
+	},
+	"tree-sitter": [
+		{
+			"scope": "source.paweli",
+			"file-types": [
+				"pw"
+			],
+			"highlights": "queries/highlights.scm"
+		}
+	],
+	"allowScripts": {
+		"tree-sitter-cli@0.25.10": true
+	}
+}

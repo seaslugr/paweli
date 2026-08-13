@@ -1,0 +1,49 @@
+fn classify(int n) -> string {
+	if (n < 0) {
+		return "negative";
+	} else if (n == 0) {
+		return "zero";
+	} else {
+		return "positive";
+	}
+}
+
+fn sum_to(int n) -> int {
+	int total = 0;
+	for (int i = 1; i <= n; i = i + 1) {
+		total = total + i;
+	}
+	return total;
+}
+
+fn count_while(int n) -> int {
+	int count = 0;
+	while (n > 0) {
+		count = count + 1;
+		n = n - 1;
+	}
+	return count;
+}
+
+fn main() {
+	assert(classify(-5) == "negative");
+	assert(classify(0) == "zero");
+	assert(classify(7) == "positive");
+
+	assert(sum_to(10) == 55);
+	assert(sum_to(0) == 0);
+
+	assert(count_while(5) == 5);
+
+	int i = 0;
+	int total = 0;
+	for (;;) {
+		i = i + 1;
+		if (i > 5) {
+			assert(total == 15, "for(;;) with an early return should still accumulate correctly");
+			print("control_flow: ok");
+			return;
+		}
+		total = total + i;
+	}
+}

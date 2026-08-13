@@ -1,0 +1,54 @@
+#include "token.h"
+
+const char *token_type_name(token_type_t type) {
+	switch (type) {
+		case TOKEN_IDENTIFIER: return "identifier";
+		case TOKEN_INT_LITERAL: return "int literal";
+		case TOKEN_FLOAT_LITERAL: return "float literal";
+		case TOKEN_STRING_LITERAL: return "string literal";
+		case TOKEN_FN: return "'fn'";
+		case TOKEN_INT: return "'int'";
+		case TOKEN_FLOAT: return "'float'";
+		case TOKEN_STRING: return "'string'";
+		case TOKEN_BOOL: return "'bool'";
+		case TOKEN_IF: return "'if'";
+		case TOKEN_ELSE: return "'else'";
+		case TOKEN_WHILE: return "'while'";
+		case TOKEN_FOR: return "'for'";
+		case TOKEN_RETURN: return "'return'";
+		case TOKEN_TRUE: return "'true'";
+		case TOKEN_FALSE: return "'false'";
+		case TOKEN_NULL: return "'null'";
+		case TOKEN_EXPORT: return "'export'";
+		case TOKEN_MODULE: return "'#module'";
+		case TOKEN_MODULEDEF: return "'#moduledef'";
+		case TOKEN_LPAREN: return "'('";
+		case TOKEN_RPAREN: return "')'";
+		case TOKEN_LBRACE: return "'{'";
+		case TOKEN_RBRACE: return "'}'";
+		case TOKEN_LBRACKET: return "'['";
+		case TOKEN_RBRACKET: return "']'";
+		case TOKEN_COMMA: return "','";
+		case TOKEN_SEMICOLON: return "';'";
+		case TOKEN_DOT: return "'.'";
+		case TOKEN_PLUS: return "'+'";
+		case TOKEN_MINUS: return "'-'";
+		case TOKEN_STAR: return "'*'";
+		case TOKEN_SLASH: return "'/'";
+		case TOKEN_PERCENT: return "'%'";
+		case TOKEN_EQUAL: return "'='";
+		case TOKEN_EQUAL_EQUAL: return "'=='";
+		case TOKEN_BANG: return "'!'";
+		case TOKEN_BANG_EQUAL: return "'!='";
+		case TOKEN_LESS: return "'<'";
+		case TOKEN_LESS_EQUAL: return "'<='";
+		case TOKEN_GREATER: return "'>'";
+		case TOKEN_GREATER_EQUAL: return "'>='";
+		case TOKEN_AMP_AMP: return "'&&'";
+		case TOKEN_PIPE_PIPE: return "'||'";
+		case TOKEN_ARROW: return "'->'";
+		case TOKEN_ERROR: return "error";
+		case TOKEN_EOF: return "end of file";
+	}
+	return "?";
+}

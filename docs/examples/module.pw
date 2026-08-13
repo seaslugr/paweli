@@ -1,0 +1,10 @@
+// Simple module showcase
+#moduledef "test"
+
+fn print_test(string input) {
+	print(input);
+}
+
+fn main() {
+	export print_test; // exports a function to be exposed in the module
+}

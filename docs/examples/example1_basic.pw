@@ -1,0 +1,16 @@
+/// First example of "paweli".
+	"paweli" is a c-like scripting and general use lang.
+	This is what a multi line comment looks like!
+///
+
+// Entry point. The entry point is required, like C.
+
+fn function1(string input) {
+	print(input);
+}
+
+fn main() {
+	print("Hello World!");
+
+	function1("This is a function call!");
+}
