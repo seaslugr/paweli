@@ -63,6 +63,10 @@ typedef struct {
 	size_t length;
 	int line;
 	int column;
+	/* Only meaningful when type == TOKEN_ERROR. One of the "lexer::*"
+	   diagnostic codes in diagnostic.h; lets the parser report the
+	   lexer's own error under the shared diagnostic format. */
+	const char *error_code;
 } token_t;
 
 const char *token_type_name(token_type_t type);

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "compiler/chunk.h"
+#include "diagnostics/diagnostic.h"
 #include "stdlib/stdlib.h"
 #include "vm.h"
 
@@ -33,17 +34,28 @@ static inline value_t peek(vm_t *vm, int distance) {
 	return vm->stack_top[-1 - distance];
 }
 
-void vm_runtime_error(vm_t *vm, const char *format, ...) {
+void vm_runtime_error(vm_t *vm, const char *code, const char *format, ...) {
 	va_list args;
+	char message[1024];
 	int i;
 	call_frame_t *frame;
 	size_t instruction;
 	int line;
+	int column;
 
 	va_start(args, format);
-	vfprintf(stderr, format, args);
+	vsnprintf(message, sizeof(message), format, args);
 	va_end(args);
-	fputs("\n", stderr);
+
+	line = 0;
+	column = 0;
+	if (vm->frame_count > 0) {
+		frame = &vm->frames[vm->frame_count - 1];
+		instruction = (size_t)(frame->ip - frame->function->chunk.code) - 1;
+		line = frame->function->chunk.lines[instruction];
+		column = frame->function->chunk.columns[instruction];
+	}
+	diagnostic_emit(DIAG_ERROR, code, vm->filename, vm->source, line, column, "%s", message);
 
 	for (i = vm->frame_count - 1; i >= 0; i--) {
 		frame = &vm->frames[i];
@@ -65,7 +77,7 @@ static bool call_value(vm_t *vm, value_t callee, int arg_count) {
 	call_frame_t *frame;
 
 	if (!value_is_obj(callee)) {
-		vm_runtime_error(vm, "can only call functions");
+		vm_runtime_error(vm, "vm::not-callable", "can only call functions");
 		return false;
 	}
 
@@ -73,11 +85,11 @@ static bool call_value(vm_t *vm, value_t callee, int arg_count) {
 		case OBJ_FUNCTION:
 			function = (obj_function_t *)value_as_obj(callee);
 			if (arg_count != function->arity) {
-				vm_runtime_error(vm, "expected %d arguments but got %d", function->arity, arg_count);
+				vm_runtime_error(vm, "vm::argument-count-mismatch", "expected %d arguments but got %d", function->arity, arg_count);
 				return false;
 			}
 			if (vm->frame_count == vm->max_frames) {
-				vm_runtime_error(vm, "call stack overflow");
+				vm_runtime_error(vm, "vm::call-stack-overflow", "call stack overflow");
 				return false;
 			}
 			frame = &vm->frames[vm->frame_count];
@@ -96,11 +108,11 @@ static bool call_value(vm_t *vm, value_t callee, int arg_count) {
 			return true;
 		case OBJ_STRING:
 		case OBJ_MODULE:
-			vm_runtime_error(vm, "can only call functions");
+			vm_runtime_error(vm, "vm::not-callable", "can only call functions");
 			return false;
 	}
 
-	vm_runtime_error(vm, "can only call functions");
+	vm_runtime_error(vm, "vm::not-callable", "can only call functions");
 	return false;
 }
 
@@ -117,11 +129,11 @@ static bool binary_op(vm_t *vm, uint8_t op) {
 	a = pop(vm);
 
 	if (!value_is_int(a) && !value_is_float(a)) {
-		vm_runtime_error(vm, "left operand must be a number");
+		vm_runtime_error(vm, "vm::non-numeric-operand", "left operand must be a number");
 		return false;
 	}
 	if (!value_is_int(b) && !value_is_float(b)) {
-		vm_runtime_error(vm, "right operand must be a number");
+		vm_runtime_error(vm, "vm::non-numeric-operand", "right operand must be a number");
 		return false;
 	}
 
@@ -141,20 +153,20 @@ static bool binary_op(vm_t *vm, uint8_t op) {
 			case OP_MULTIPLY: push(vm, value_int(xi * yi)); return true;
 			case OP_DIVIDE:
 				if (yi == 0) {
-					vm_runtime_error(vm, "division by zero");
+					vm_runtime_error(vm, "vm::division-by-zero", "division by zero");
 					return false;
 				}
 				push(vm, value_int(xi / yi));
 				return true;
 			case OP_MODULO:
 				if (yi == 0) {
-					vm_runtime_error(vm, "modulo by zero");
+					vm_runtime_error(vm, "vm::modulo-by-zero", "modulo by zero");
 					return false;
 				}
 				push(vm, value_int(xi % yi));
 				return true;
 			default:
-				vm_runtime_error(vm, "unsupported operator");
+				vm_runtime_error(vm, "vm::unsupported-operator", "unsupported operator");
 				return false;
 		}
 	}
@@ -172,10 +184,10 @@ static bool binary_op(vm_t *vm, uint8_t op) {
 		case OP_MULTIPLY: push(vm, value_float(xf * yf)); return true;
 		case OP_DIVIDE: push(vm, value_float(xf / yf)); return true;
 		case OP_MODULO:
-			vm_runtime_error(vm, "modulo requires integer operands");
+			vm_runtime_error(vm, "vm::modulo-type-mismatch", "modulo requires integer operands");
 			return false;
 		default:
-			vm_runtime_error(vm, "unsupported operator");
+			vm_runtime_error(vm, "vm::unsupported-operator", "unsupported operator");
 			return false;
 	}
 }
@@ -200,7 +212,7 @@ static vm_result_t run(vm_t *vm) {
 #define READ_STRING() ((obj_string_t *)value_as_obj(READ_CONSTANT()))
 
 		if ((size_t)(vm->stack_top - vm->stack) >= vm->stack_size) {
-			vm_runtime_error(vm, "stack overflow");
+			vm_runtime_error(vm, "vm::stack-overflow", "stack overflow");
 			return VM_RUNTIME_ERROR;
 		}
 
@@ -233,7 +245,7 @@ static vm_result_t run(vm_t *vm) {
 			case OP_GET_GLOBAL:
 				name = READ_STRING();
 				if (!table_get(&vm->globals, name, &global_value)) {
-					vm_runtime_error(vm, "undefined variable '%.*s'", (int)name->length, name->chars);
+					vm_runtime_error(vm, "vm::undefined-variable", "undefined variable '%.*s'", (int)name->length, name->chars);
 					return VM_RUNTIME_ERROR;
 				}
 				push(vm, global_value);
@@ -248,13 +260,13 @@ static vm_result_t run(vm_t *vm) {
 				a = pop(vm);
 
 				if (!value_is_obj(a) || value_as_obj(a)->type != OBJ_MODULE) {
-					vm_runtime_error(vm, "'.' access only works on modules right now");
+					vm_runtime_error(vm, "vm::unsupported-member-access", "'.' access only works on modules right now");
 					return VM_RUNTIME_ERROR;
 				}
 
 				module = (obj_module_t *)value_as_obj(a);
 				if (!table_get(module->members, name, &global_value)) {
-					vm_runtime_error(vm, "module '%.*s' has no member '%.*s'", (int)module->name->length, module->name->chars, (int)name->length, name->chars);
+					vm_runtime_error(vm, "vm::undefined-module-member", "module '%.*s' has no member '%.*s'", (int)module->name->length, module->name->chars, (int)name->length, name->chars);
 					return VM_RUNTIME_ERROR;
 				}
 				push(vm, global_value);
@@ -292,7 +304,7 @@ static vm_result_t run(vm_t *vm) {
 				} else if (value_is_float(a)) {
 					push(vm, value_float(-value_as_float(a)));
 				} else {
-					vm_runtime_error(vm, "operand of unary '-' must be a number");
+					vm_runtime_error(vm, "vm::non-numeric-operand", "operand of unary '-' must be a number");
 					return VM_RUNTIME_ERROR;
 				}
 				break;
@@ -331,7 +343,7 @@ static vm_result_t run(vm_t *vm) {
 				break;
 			}
 			default:
-				vm_runtime_error(vm, "corrupt bytecode: unknown opcode %d", instruction);
+				vm_runtime_error(vm, "vm::corrupt-bytecode", "corrupt bytecode: unknown opcode %d", instruction);
 				return VM_RUNTIME_ERROR;
 		}
 
@@ -342,7 +354,7 @@ static vm_result_t run(vm_t *vm) {
 	}
 }
 
-void vm_init(vm_t *vm, obj_t **objects, table_t *strings, const char *filename, size_t stack_size, int max_frames) {
+void vm_init(vm_t *vm, obj_t **objects, table_t *strings, const char *filename, const char *source, size_t stack_size, int max_frames) {
 	if (stack_size < VM_MIN_STACK_SIZE) {
 		stack_size = VM_MIN_STACK_SIZE;
 	}
@@ -362,6 +374,7 @@ void vm_init(vm_t *vm, obj_t **objects, table_t *strings, const char *filename, 
 	vm->objects = objects;
 	vm->strings = strings;
 	vm->filename = filename;
+	vm->source = source;
 
 	stdlib_install(vm);
 }

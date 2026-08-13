@@ -22,6 +22,8 @@ endif()
 set(PAWELI_SOURCES
     src/main.c
 
+    src/diagnostics/diagnostic.c
+
     src/lexer/lexer.c
     src/lexer/token.c
 

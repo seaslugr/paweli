@@ -15,7 +15,7 @@ static bool stdlib_abs(vm_t *vm, int arg_count, value_t *args, value_t *out_resu
 		return false;
 	}
 	if (!value_is_int(args[0])) {
-		vm_runtime_error(vm, "abs expects an int argument");
+		vm_runtime_error(vm, "vm::argument-type-mismatch", "abs expects an int argument");
 		return false;
 	}
 
@@ -32,7 +32,7 @@ static bool stdlib_max(vm_t *vm, int arg_count, value_t *args, value_t *out_resu
 		return false;
 	}
 	if (!value_is_int(args[0]) || !value_is_int(args[1])) {
-		vm_runtime_error(vm, "max expects two int arguments");
+		vm_runtime_error(vm, "vm::argument-type-mismatch", "max expects two int arguments");
 		return false;
 	}
 
@@ -50,7 +50,7 @@ static bool stdlib_min(vm_t *vm, int arg_count, value_t *args, value_t *out_resu
 		return false;
 	}
 	if (!value_is_int(args[0]) || !value_is_int(args[1])) {
-		vm_runtime_error(vm, "min expects two int arguments");
+		vm_runtime_error(vm, "vm::argument-type-mismatch", "min expects two int arguments");
 		return false;
 	}
 
@@ -72,12 +72,12 @@ static bool stdlib_sqrt(vm_t *vm, int arg_count, value_t *args, value_t *out_res
 	} else if (value_is_float(args[0])) {
 		n = value_as_float(args[0]);
 	} else {
-		vm_runtime_error(vm, "sqrt expects a number argument");
+		vm_runtime_error(vm, "vm::argument-type-mismatch", "sqrt expects a number argument");
 		return false;
 	}
 
 	if (n < 0.0) {
-		vm_runtime_error(vm, "sqrt of a negative number");
+		vm_runtime_error(vm, "vm::invalid-argument-value", "sqrt of a negative number");
 		return false;
 	}
 

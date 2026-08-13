@@ -1,10 +1,10 @@
 #include <stdbool.h>
-#include <stdio.h>
 
+#include "diagnostics/diagnostic.h"
 #include "parser.h"
 
-static void error_at(parser_t *parser, token_t token, const char *message);
-static void error_at_current(parser_t *parser, const char *message);
+static void error_at(parser_t *parser, token_t token, const char *code, const char *message);
+static void error_at_current(parser_t *parser, const char *code, const char *message);
 static void advance(parser_t *parser);
 static bool check(parser_t *parser, token_type_t type);
 static bool match(parser_t *parser, token_type_t type);
@@ -38,26 +38,31 @@ static ast_node_t *parse_call(parser_t *parser);
 static ast_node_t *finish_call(parser_t *parser, ast_node_t *callee);
 static ast_node_t *parse_primary(parser_t *parser);
 
-static void error_at(parser_t *parser, token_t token, const char *message) {
+static void error_at(parser_t *parser, token_t token, const char *code, const char *message) {
+	const char *actual_code;
+
 	if (parser->panic_mode) {
 		return;
 	}
 	parser->panic_mode = true;
 	parser->had_error = true;
 
-	fprintf(stderr, "%s:%d:%d: error: ", parser->filename, token.line, token.column);
+	/* A TOKEN_ERROR came from the lexer, not from a parser expectation
+	   that failed, so it carries its own "lexer::*" code and its message
+	   text lives in token.start/length rather than in `message`. */
+	actual_code = (token.type == TOKEN_ERROR && token.error_code != NULL) ? token.error_code : code;
 
 	if (token.type == TOKEN_EOF) {
-		fprintf(stderr, "at end of file: %s\n", message);
+		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, "at end of file: %s", message);
 	} else if (token.type == TOKEN_ERROR) {
-		fprintf(stderr, "%.*s\n", (int)token.length, token.start);
+		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, "%.*s", (int)token.length, token.start);
 	} else {
-		fprintf(stderr, "at '%.*s': %s\n", (int)token.length, token.start, message);
+		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, "at '%.*s': %s", (int)token.length, token.start, message);
 	}
 }
 
-static void error_at_current(parser_t *parser, const char *message) {
-	error_at(parser, parser->current, message);
+static void error_at_current(parser_t *parser, const char *code, const char *message) {
+	error_at(parser, parser->current, code, message);
 }
 
 static void advance(parser_t *parser) {
@@ -68,7 +73,7 @@ static void advance(parser_t *parser) {
 		if (parser->current.type != TOKEN_ERROR) {
 			break;
 		}
-		error_at_current(parser, "");
+		error_at_current(parser, NULL, "");
 	}
 }
 
@@ -89,7 +94,7 @@ static void consume(parser_t *parser, token_type_t type, const char *message) {
 		advance(parser);
 		return;
 	}
-	error_at_current(parser, message);
+	error_at_current(parser, "parser::expected-token", message);
 }
 
 static bool check_type_keyword(parser_t *parser) {
@@ -163,7 +168,14 @@ static ast_node_t *parse_function_decl(parser_t *parser) {
 	ast_node_t *fn_node;
 
 	if (!check(parser, TOKEN_FN)) {
-		error_at_current(parser, "expected a function declaration ('fn')");
+		error_at_current(parser, "parser::expected-function", "expected a function declaration ('fn')");
+		/* Guaranteed to consume at least this token before synchronizing:
+		   this check runs before anything else has advanced past it, so if
+		   it happens to already be one of synchronize()'s own stop-set
+		   tokens (return, if, a type keyword, ...), synchronize() would
+		   return immediately without moving forward, and the caller would
+		   retry parse_function_decl() on the same token forever. */
+		advance(parser);
 		synchronize(parser);
 		return NULL;
 	}
@@ -189,7 +201,7 @@ static ast_node_t *parse_function_decl(parser_t *parser) {
 	return_type = TOKEN_EOF;
 	if (match(parser, TOKEN_ARROW)) {
 		if (!check_type_keyword(parser)) {
-			error_at_current(parser, "expected a return type after '->'");
+			error_at_current(parser, "parser::expected-return-type", "expected a return type after '->'");
 		} else {
 			return_type = parser->current.type;
 			has_return_type = true;
@@ -213,7 +225,7 @@ static void parse_params(parser_t *parser, ast_node_t *fn_node) {
 
 	for (;;) {
 		if (!check_type_keyword(parser)) {
-			error_at_current(parser, "expected a parameter type");
+			error_at_current(parser, "parser::expected-parameter-type", "expected a parameter type");
 			return;
 		}
 
@@ -463,7 +475,7 @@ static ast_node_t *parse_assignment(parser_t *parser) {
 		value = parse_assignment(parser);
 
 		if (expr->kind != AST_IDENTIFIER_EXPR && expr->kind != AST_MEMBER_EXPR) {
-			error_at(parser, equals, "invalid assignment target");
+			error_at(parser, equals, "parser::invalid-assignment-target", "invalid assignment target");
 			ast_free(value);
 			return expr;
 		}
@@ -669,7 +681,7 @@ static ast_node_t *parse_primary(parser_t *parser) {
 		return expr;
 	}
 
-	error_at_current(parser, "expected an expression");
+	error_at_current(parser, "parser::expected-expression", "expected an expression");
 	advance(parser);
 	return ast_new_literal(AST_NULL_LITERAL, parser->previous, parser->previous.line, parser->previous.column);
 }
@@ -677,6 +689,7 @@ static ast_node_t *parse_primary(parser_t *parser) {
 void parser_init(parser_t *parser, const char *source, const char *filename) {
 	lexer_init(&parser->lexer, source);
 	parser->filename = filename;
+	parser->source = source;
 	parser->had_error = false;
 	parser->panic_mode = false;
 
@@ -685,6 +698,7 @@ void parser_init(parser_t *parser, const char *source, const char *filename) {
 	parser->current.length = 0;
 	parser->current.line = 1;
 	parser->current.column = 1;
+	parser->current.error_code = NULL;
 	parser->previous = parser->current;
 
 	advance(parser);

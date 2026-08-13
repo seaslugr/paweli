@@ -11,4 +11,4 @@
    *strings. There is no GC yet, so the caller owns both and must free
    them once done. Returns NULL if compilation failed; errors are already
    printed to stderr. */
-obj_function_t *compiler_compile(const ast_node_t *program, const char *filename, obj_t **objects, table_t *strings);
+obj_function_t *compiler_compile(const ast_node_t *program, const char *filename, const char *source, obj_t **objects, table_t *strings);

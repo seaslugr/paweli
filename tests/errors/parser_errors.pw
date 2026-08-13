@@ -1,0 +1,10 @@
+// Parser-stage errors: several independent syntax mistakes in one file.
+// synchronize() lets the parser recover after each one and keep going,
+// so this run reports multiple parser::* diagnostics instead of stopping
+// at the first.
+
+fn main() {
+	int x = 1 + ;
+	int y = 2
+	print(x + y;
+}

@@ -12,6 +12,7 @@ void chunk_init(chunk_t *chunk) {
 	chunk->capacity = 0;
 	chunk->code = NULL;
 	chunk->lines = NULL;
+	chunk->columns = NULL;
 	chunk->constants = NULL;
 	chunk->constants_count = 0;
 	chunk->constants_capacity = 0;
@@ -20,18 +21,21 @@ void chunk_init(chunk_t *chunk) {
 void chunk_free(chunk_t *chunk) {
 	free(chunk->code);
 	free(chunk->lines);
+	free(chunk->columns);
 	free(chunk->constants);
 	chunk_init(chunk);
 }
 
-void chunk_write(chunk_t *chunk, uint8_t byte, int line) {
+void chunk_write(chunk_t *chunk, uint8_t byte, int line, int column) {
 	if (chunk->count == chunk->capacity) {
 		chunk->capacity = chunk->capacity < 8 ? 8 : chunk->capacity * 2;
 		chunk->code = realloc(chunk->code, chunk->capacity * sizeof(uint8_t));
 		chunk->lines = realloc(chunk->lines, chunk->capacity * sizeof(int));
+		chunk->columns = realloc(chunk->columns, chunk->capacity * sizeof(int));
 	}
 	chunk->code[chunk->count] = byte;
 	chunk->lines[chunk->count] = line;
+	chunk->columns[chunk->count] = column;
 	chunk->count++;
 }
 

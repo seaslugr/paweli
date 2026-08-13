@@ -1,0 +1,14 @@
+// Compiler-stage errors: several independent semantic mistakes in one
+// function. declare_local()/add_local() now return false and skip
+// mark_initialized() on failure instead of corrupting the locals table,
+// so this run reports one compiler diagnostic per real mistake instead
+// of cascading into bogus follow-on errors.
+
+fn main() {
+	int a = 1;
+	int a = 2;
+
+	undeclared_target = 5;
+
+	print(a);
+}

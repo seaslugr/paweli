@@ -12,7 +12,7 @@ static bool check_string_arg(vm_t *vm, const char *fn_name, value_t value);
 
 static bool check_string_arg(vm_t *vm, const char *fn_name, value_t value) {
 	if (!value_is_obj(value) || value_as_obj(value)->type != OBJ_STRING) {
-		vm_runtime_error(vm, "%s expects a string argument", fn_name);
+		vm_runtime_error(vm, "vm::argument-type-mismatch", "%s expects a string argument", fn_name);
 		return false;
 	}
 	return true;

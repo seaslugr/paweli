@@ -33,18 +33,22 @@ typedef struct vm {
 	table_t *strings;
 
 	const char *filename;
+	/* Whole file's null-terminated text, kept only to render source
+	   snippets in diagnostics. vm_t does not own it. */
+	const char *source;
 } vm_t;
 
-/* Does not take ownership of objects or strings. Same convention as the
-   compiler: the caller frees both once done. Pre-defines "print" and the
-   "stdlib" module into globals, see src/stdlib/stdlib.c. Both are always
-   available; no #module is needed. stack_size and max_frames configure
-   the VM's value stack and call-frame depth. stack_size must be at
-   least VM_MIN_STACK_SIZE. */
-void vm_init(vm_t *vm, obj_t **objects, table_t *strings, const char *filename, size_t stack_size, int max_frames);
+/* Does not take ownership of objects, strings, or source. Same convention
+   as the compiler: the caller frees them once done. Pre-defines "print"
+   and the "stdlib" module into globals, see src/stdlib/stdlib.c. Both are
+   always available; no #module is needed. stack_size and max_frames
+   configure the VM's value stack and call-frame depth. stack_size must be
+   at least VM_MIN_STACK_SIZE. */
+void vm_init(vm_t *vm, obj_t **objects, table_t *strings, const char *filename, const char *source, size_t stack_size, int max_frames);
 void vm_free(vm_t *vm);
 vm_result_t vm_run(vm_t *vm, obj_function_t *script);
 
 /* Exposed so native functions (in src/stdlib) can report their own type
-   or arity errors. They use the same mechanism the VM itself uses. */
-void vm_runtime_error(vm_t *vm, const char *format, ...);
+   or arity errors. They use the same mechanism the VM itself uses. code
+   is a "vm::*" diagnostic code, see diagnostics/diagnostic.h. */
+void vm_runtime_error(vm_t *vm, const char *code, const char *format, ...);

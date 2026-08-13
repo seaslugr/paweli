@@ -47,6 +47,7 @@ typedef struct {
 	size_t capacity;
 	uint8_t *code;
 	int *lines;
+	int *columns;
 
 	value_t *constants;
 	size_t constants_count;
@@ -55,7 +56,7 @@ typedef struct {
 
 void chunk_init(chunk_t *chunk);
 void chunk_free(chunk_t *chunk);
-void chunk_write(chunk_t *chunk, uint8_t byte, int line);
+void chunk_write(chunk_t *chunk, uint8_t byte, int line, int column);
 size_t chunk_add_constant(chunk_t *chunk, value_t value);
 
 void chunk_disassemble(const chunk_t *chunk, const char *name, FILE *out);

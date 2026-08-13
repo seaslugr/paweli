@@ -23,12 +23,20 @@ Both `--dump-ast` and `--dump-bytecode` still run the program afterward, unless 
 
 ## Errors
 
-Parse and compile errors are reported as `file:line: error: message` (parse errors also include a column: `file:line:column: error: message`) and stop before the program runs.
-
-Runtime errors print the failing message, then a call-stack trace from the point of failure outward:
+Every diagnostic, from the lexer, parser, compiler, or VM, is reported in one shared format:
 
 ```
-undefined variable 'stdlib'
+[code] file:line:col: error: message
+```
+
+`code` is a stable, namespaced slug (`parser::expected-token`, `compiler::duplicate-local`, `vm::division-by-zero`, ...) that identifies the kind of error independent of the message text. The stage prefix (`lexer::`, `parser::`, `compiler::`, `vm::`) tells you which stage raised it. `col` is omitted for the handful of diagnostics that don't have a precise source column (some compiler codegen-limit errors, and all VM runtime errors, whose bytecode only tracks a line per instruction): those print as `[code] file:line: error: message`.
+
+Parse and compile errors stop before the program runs. Both stages try to collect and report more than one error per run instead of stopping at the first one, so a single invocation can surface several independent problems at once.
+
+Runtime errors print the failing message with its own `[code] file:line: error: message` header, then a call-stack trace from the point of failure outward:
+
+```
+[vm::undefined-variable] example.pw:10: error: undefined variable 'stdlib'
 example.pw:10: in main()
 example.pw:1: in <script>
 ```
@@ -37,5 +45,5 @@ example.pw:1: in <script>
 
 Two distinct stack-related errors exist:
 
-- **`stack overflow`**: the value stack exceeded `--stack-size`.
-- **`call stack overflow`**: call nesting exceeded `--max-frames`, usually from unbounded recursion.
+- **`vm::stack-overflow`** (`stack overflow`): the value stack exceeded `--stack-size`.
+- **`vm::call-stack-overflow`** (`call stack overflow`): call nesting exceeded `--max-frames`, usually from unbounded recursion.

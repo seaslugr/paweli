@@ -24,7 +24,7 @@ static bool stdlib_to_string(vm_t *vm, int arg_count, value_t *args, value_t *ou
 	} else if (value_is_bool(args[0])) {
 		written = snprintf(buffer, sizeof(buffer), "%s", value_as_bool(args[0]) ? "true" : "false");
 	} else {
-		vm_runtime_error(vm, "to_string expects an int, float, or bool argument");
+		vm_runtime_error(vm, "vm::argument-type-mismatch", "to_string expects an int, float, or bool argument");
 		return false;
 	}
 
@@ -42,7 +42,7 @@ static bool stdlib_to_int(vm_t *vm, int arg_count, value_t *args, value_t *out_r
 		return false;
 	}
 	if (!value_is_obj(args[0]) || value_as_obj(args[0])->type != OBJ_STRING) {
-		vm_runtime_error(vm, "to_int expects a string argument");
+		vm_runtime_error(vm, "vm::argument-type-mismatch", "to_int expects a string argument");
 		return false;
 	}
 

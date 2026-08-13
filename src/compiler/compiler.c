@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "compiler.h"
+#include "diagnostics/diagnostic.h"
 
 #define MAX_LOCALS 256
 
@@ -17,6 +18,9 @@ typedef struct {
 	obj_t **objects;
 	table_t *strings;
 	const char *filename;
+	/* Whole file's null-terminated text, kept only to render source
+	   snippets in diagnostics. compiler_t does not own it. */
+	const char *source;
 	bool had_error;
 
 	local_t locals[MAX_LOCALS];
@@ -25,27 +29,27 @@ typedef struct {
 } compiler_t;
 
 static chunk_t *current_chunk(compiler_t *compiler);
-static void compiler_error(compiler_t *compiler, int line, const char *message);
-static void emit_byte(compiler_t *compiler, uint8_t byte, int line);
-static void emit_bytes(compiler_t *compiler, uint8_t b1, uint8_t b2, int line);
-static size_t emit_jump(compiler_t *compiler, uint8_t instruction, int line);
+static void compiler_error(compiler_t *compiler, int line, int column, const char *code, const char *message);
+static void emit_byte(compiler_t *compiler, uint8_t byte, int line, int column);
+static void emit_bytes(compiler_t *compiler, uint8_t b1, uint8_t b2, int line, int column);
+static size_t emit_jump(compiler_t *compiler, uint8_t instruction, int line, int column);
 static void patch_jump(compiler_t *compiler, size_t offset, int line);
-static void emit_loop(compiler_t *compiler, size_t loop_start, int line);
-static void emit_constant(compiler_t *compiler, value_t value, int line);
-static void emit_name_op_str(compiler_t *compiler, uint8_t opcode, const char *name, size_t length, int line);
-static void emit_name_op(compiler_t *compiler, uint8_t opcode, token_t name, int line);
+static void emit_loop(compiler_t *compiler, size_t loop_start, int line, int column);
+static void emit_constant(compiler_t *compiler, value_t value, int line, int column);
+static void emit_name_op_str(compiler_t *compiler, uint8_t opcode, const char *name, size_t length, int line, int column);
+static void emit_name_op(compiler_t *compiler, uint8_t opcode, token_t name, int line, int column);
 static int64_t parse_int_literal(token_t token);
 static double parse_float_literal(token_t token);
 
 static void begin_scope(compiler_t *compiler);
-static void end_scope(compiler_t *compiler, int line);
+static void end_scope(compiler_t *compiler, int line, int column);
 static bool identifiers_equal(token_t a, token_t b);
-static void add_local(compiler_t *compiler, token_t name, int line);
-static void declare_local(compiler_t *compiler, token_t name, int line);
+static bool add_local(compiler_t *compiler, token_t name, int line);
+static bool declare_local(compiler_t *compiler, token_t name, int line);
 static void mark_initialized(compiler_t *compiler);
 static int resolve_local(compiler_t *compiler, token_t name);
 
-static void compile_function_decl(const ast_node_t *fn_node, obj_t **objects, table_t *strings, const char *filename, bool *had_error, obj_function_t **out_function);
+static void compile_function_decl(const ast_node_t *fn_node, obj_t **objects, table_t *strings, const char *filename, const char *source, bool *had_error, obj_function_t **out_function);
 
 static void compile_statements(compiler_t *compiler, const ast_node_t *block_node);
 static void compile_block_stmt(compiler_t *compiler, const ast_node_t *block_node);
@@ -70,24 +74,24 @@ static chunk_t *current_chunk(compiler_t *compiler) {
 	return &compiler->function->chunk;
 }
 
-static void compiler_error(compiler_t *compiler, int line, const char *message) {
-	fprintf(stderr, "%s:%d: error: %s\n", compiler->filename, line, message);
+static void compiler_error(compiler_t *compiler, int line, int column, const char *code, const char *message) {
+	diagnostic_emit(DIAG_ERROR, code, compiler->filename, compiler->source, line, column, "%s", message);
 	compiler->had_error = true;
 }
 
-static void emit_byte(compiler_t *compiler, uint8_t byte, int line) {
-	chunk_write(current_chunk(compiler), byte, line);
+static void emit_byte(compiler_t *compiler, uint8_t byte, int line, int column) {
+	chunk_write(current_chunk(compiler), byte, line, column);
 }
 
-static void emit_bytes(compiler_t *compiler, uint8_t b1, uint8_t b2, int line) {
-	emit_byte(compiler, b1, line);
-	emit_byte(compiler, b2, line);
+static void emit_bytes(compiler_t *compiler, uint8_t b1, uint8_t b2, int line, int column) {
+	emit_byte(compiler, b1, line, column);
+	emit_byte(compiler, b2, line, column);
 }
 
-static size_t emit_jump(compiler_t *compiler, uint8_t instruction, int line) {
-	emit_byte(compiler, instruction, line);
-	emit_byte(compiler, 0xff, line);
-	emit_byte(compiler, 0xff, line);
+static size_t emit_jump(compiler_t *compiler, uint8_t instruction, int line, int column) {
+	emit_byte(compiler, instruction, line, column);
+	emit_byte(compiler, 0xff, line, column);
+	emit_byte(compiler, 0xff, line, column);
 	return current_chunk(compiler)->count - 2;
 }
 
@@ -97,7 +101,7 @@ static void patch_jump(compiler_t *compiler, size_t offset, int line) {
 	jump = current_chunk(compiler)->count - offset - 2;
 
 	if (jump > UINT16_MAX) {
-		compiler_error(compiler, line, "too much code to jump over");
+		compiler_error(compiler, line, 0, "compiler::jump-too-large", "too much code to jump over");
 		return;
 	}
 
@@ -105,52 +109,52 @@ static void patch_jump(compiler_t *compiler, size_t offset, int line) {
 	current_chunk(compiler)->code[offset + 1] = (uint8_t)(jump & 0xff);
 }
 
-static void emit_loop(compiler_t *compiler, size_t loop_start, int line) {
+static void emit_loop(compiler_t *compiler, size_t loop_start, int line, int column) {
 	size_t offset;
 	size_t jump;
 
-	emit_byte(compiler, OP_LOOP, line);
+	emit_byte(compiler, OP_LOOP, line, column);
 
 	offset = current_chunk(compiler)->count + 2;
 	jump = offset - loop_start;
 
 	if (jump > UINT16_MAX) {
-		compiler_error(compiler, line, "loop body too large");
+		compiler_error(compiler, line, 0, "compiler::loop-too-large", "loop body too large");
 		jump = 0;
 	}
 
-	emit_byte(compiler, (uint8_t)((jump >> 8) & 0xff), line);
-	emit_byte(compiler, (uint8_t)(jump & 0xff), line);
+	emit_byte(compiler, (uint8_t)((jump >> 8) & 0xff), line, column);
+	emit_byte(compiler, (uint8_t)(jump & 0xff), line, column);
 }
 
-static void emit_constant(compiler_t *compiler, value_t value, int line) {
+static void emit_constant(compiler_t *compiler, value_t value, int line, int column) {
 	size_t index;
 
 	index = chunk_add_constant(current_chunk(compiler), value);
 	if (index > UINT8_MAX) {
-		compiler_error(compiler, line, "too many constants in one function");
+		compiler_error(compiler, line, 0, "compiler::too-many-constants", "too many constants in one function");
 		return;
 	}
 
-	emit_bytes(compiler, OP_CONSTANT, (uint8_t)index, line);
+	emit_bytes(compiler, OP_CONSTANT, (uint8_t)index, line, column);
 }
 
-static void emit_name_op_str(compiler_t *compiler, uint8_t opcode, const char *name, size_t length, int line) {
+static void emit_name_op_str(compiler_t *compiler, uint8_t opcode, const char *name, size_t length, int line, int column) {
 	obj_string_t *string;
 	size_t index;
 
 	string = object_new_string(compiler->objects, compiler->strings, name, length);
 	index = chunk_add_constant(current_chunk(compiler), value_obj((obj_t *)string));
 	if (index > UINT8_MAX) {
-		compiler_error(compiler, line, "too many constants in one function");
+		compiler_error(compiler, line, 0, "compiler::too-many-constants", "too many constants in one function");
 		return;
 	}
 
-	emit_bytes(compiler, opcode, (uint8_t)index, line);
+	emit_bytes(compiler, opcode, (uint8_t)index, line, column);
 }
 
-static void emit_name_op(compiler_t *compiler, uint8_t opcode, token_t name, int line) {
-	emit_name_op_str(compiler, opcode, name.start, name.length, line);
+static void emit_name_op(compiler_t *compiler, uint8_t opcode, token_t name, int line, int column) {
+	emit_name_op_str(compiler, opcode, name.start, name.length, line, column);
 }
 
 /* Token text is not null-terminated. The character right after it is not
@@ -184,11 +188,11 @@ static void begin_scope(compiler_t *compiler) {
 	compiler->scope_depth++;
 }
 
-static void end_scope(compiler_t *compiler, int line) {
+static void end_scope(compiler_t *compiler, int line, int column) {
 	compiler->scope_depth--;
 
 	while (compiler->local_count > 0 && compiler->locals[compiler->local_count - 1].depth > compiler->scope_depth) {
-		emit_byte(compiler, OP_POP, line);
+		emit_byte(compiler, OP_POP, line, column);
 		compiler->local_count--;
 	}
 }
@@ -200,24 +204,34 @@ static bool identifiers_equal(token_t a, token_t b) {
 	return memcmp(a.start, b.start, a.length) == 0;
 }
 
-static void add_local(compiler_t *compiler, token_t name, int line) {
+/* Returns false (and reports an error) without touching compiler state
+   when the locals table is full, so a caller that skips mark_initialized()
+   on failure never mistakes the previous local for the one that failed
+   to get a slot. */
+static bool add_local(compiler_t *compiler, token_t name, int line) {
 	local_t *local;
 
 	if (compiler->local_count >= MAX_LOCALS) {
-		compiler_error(compiler, line, "too many local variables in one function");
-		return;
+		compiler_error(compiler, line, name.column, "compiler::too-many-locals", "too many local variables in one function");
+		return false;
 	}
 
 	local = &compiler->locals[compiler->local_count];
 	local->name = name;
 	local->depth = -1;
 	compiler->local_count++;
+	return true;
 }
 
 /* A local only counts as a collision if it belongs to the current scope.
    Walking backwards, the first local from an outer, lower-depth scope
-   means everything past it is legitimately shadowable. */
-static void declare_local(compiler_t *compiler, token_t name, int line) {
+   means everything past it is legitimately shadowable.
+
+   Returns false (and reports an error) on a duplicate name without adding
+   a local. Callers must skip mark_initialized() when this returns false:
+   otherwise, with no new local pushed, mark_initialized() would instead
+   re-stamp the depth of whichever local already occupies the top slot. */
+static bool declare_local(compiler_t *compiler, token_t name, int line) {
 	int i;
 
 	for (i = compiler->local_count - 1; i >= 0; i--) {
@@ -225,12 +239,12 @@ static void declare_local(compiler_t *compiler, token_t name, int line) {
 			break;
 		}
 		if (identifiers_equal(name, compiler->locals[i].name)) {
-			compiler_error(compiler, line, "a variable with this name already exists in this scope");
-			return;
+			compiler_error(compiler, line, name.column, "compiler::duplicate-local", "a variable with this name already exists in this scope");
+			return false;
 		}
 	}
 
-	add_local(compiler, name, line);
+	return add_local(compiler, name, line);
 }
 
 static void mark_initialized(compiler_t *compiler) {
@@ -243,7 +257,7 @@ static int resolve_local(compiler_t *compiler, token_t name) {
 	for (i = compiler->local_count - 1; i >= 0; i--) {
 		if (identifiers_equal(name, compiler->locals[i].name)) {
 			if (compiler->locals[i].depth == -1) {
-				compiler_error(compiler, name.line, "cannot read a local variable in its own initializer");
+				compiler_error(compiler, name.line, name.column, "compiler::local-read-in-own-initializer", "cannot read a local variable in its own initializer");
 			}
 			return i;
 		}
@@ -252,7 +266,7 @@ static int resolve_local(compiler_t *compiler, token_t name) {
 	return -1;
 }
 
-static void compile_function_decl(const ast_node_t *fn_node, obj_t **objects, table_t *strings, const char *filename, bool *had_error, obj_function_t **out_function) {
+static void compile_function_decl(const ast_node_t *fn_node, obj_t **objects, table_t *strings, const char *filename, const char *source, bool *had_error, obj_function_t **out_function) {
 	compiler_t compiler;
 	size_t i;
 	const ast_node_t *param;
@@ -262,12 +276,13 @@ static void compile_function_decl(const ast_node_t *fn_node, obj_t **objects, ta
 	compiler.objects = objects;
 	compiler.strings = strings;
 	compiler.filename = filename;
+	compiler.source = source;
 	compiler.had_error = false;
 	compiler.local_count = 0;
 	compiler.scope_depth = 0;
 
 	if (fn_node->as.function_decl.params.count > UINT8_MAX) {
-		compiler_error(&compiler, fn_node->line, "a function can have at most 255 parameters");
+		compiler_error(&compiler, fn_node->line, fn_node->column, "compiler::too-many-parameters", "a function can have at most 255 parameters");
 	}
 	compiler.function->arity = (int)fn_node->as.function_decl.params.count;
 
@@ -275,8 +290,9 @@ static void compile_function_decl(const ast_node_t *fn_node, obj_t **objects, ta
 
 	for (i = 0; i < fn_node->as.function_decl.params.count; i++) {
 		param = fn_node->as.function_decl.params.items[i];
-		declare_local(&compiler, param->as.param.name, param->line);
-		mark_initialized(&compiler);
+		if (declare_local(&compiler, param->as.param.name, param->line)) {
+			mark_initialized(&compiler);
+		}
 	}
 
 	compile_statements(&compiler, fn_node->as.function_decl.body);
@@ -284,8 +300,8 @@ static void compile_function_decl(const ast_node_t *fn_node, obj_t **objects, ta
 	// Implicit `return null;` if the body has no explicit return.
 	// This keeps the call convention uniform: every call leaves
 	// exactly one value on the caller's stack.
-	emit_byte(&compiler, OP_NULL, fn_node->line);
-	emit_byte(&compiler, OP_RETURN, fn_node->line);
+	emit_byte(&compiler, OP_NULL, fn_node->line, fn_node->column);
+	emit_byte(&compiler, OP_RETURN, fn_node->line, fn_node->column);
 
 	*had_error = *had_error || compiler.had_error;
 	*out_function = compiler.function;
@@ -302,7 +318,7 @@ static void compile_statements(compiler_t *compiler, const ast_node_t *block_nod
 static void compile_block_stmt(compiler_t *compiler, const ast_node_t *block_node) {
 	begin_scope(compiler);
 	compile_statements(compiler, block_node);
-	end_scope(compiler, block_node->line);
+	end_scope(compiler, block_node->line, block_node->column);
 }
 
 static void compile_statement(compiler_t *compiler, const ast_node_t *node) {
@@ -334,15 +350,16 @@ static void compile_statement(compiler_t *compiler, const ast_node_t *node) {
 			compile_block_stmt(compiler, node);
 			break;
 		default:
-			compiler_error(compiler, node->line, "expected a statement");
+			compiler_error(compiler, node->line, node->column, "compiler::unsupported-statement", "expected a statement");
 			break;
 	}
 }
 
 static void compile_var_decl(compiler_t *compiler, const ast_node_t *node) {
 	compile_expr(compiler, node->as.var_decl.initializer);
-	declare_local(compiler, node->as.var_decl.name, node->line);
-	mark_initialized(compiler);
+	if (declare_local(compiler, node->as.var_decl.name, node->line)) {
+		mark_initialized(compiler);
+	}
 }
 
 static void compile_if_stmt(compiler_t *compiler, const ast_node_t *node) {
@@ -351,14 +368,14 @@ static void compile_if_stmt(compiler_t *compiler, const ast_node_t *node) {
 
 	compile_expr(compiler, node->as.if_stmt.condition);
 
-	then_jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line);
-	emit_byte(compiler, OP_POP, node->line);
+	then_jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line, node->column);
+	emit_byte(compiler, OP_POP, node->line, node->column);
 	compile_block_stmt(compiler, node->as.if_stmt.then_branch);
 
-	else_jump = emit_jump(compiler, OP_JUMP, node->line);
+	else_jump = emit_jump(compiler, OP_JUMP, node->line, node->column);
 
 	patch_jump(compiler, then_jump, node->line);
-	emit_byte(compiler, OP_POP, node->line);
+	emit_byte(compiler, OP_POP, node->line, node->column);
 
 	if (node->as.if_stmt.else_branch != NULL) {
 		if (node->as.if_stmt.else_branch->kind == AST_IF_STMT) {
@@ -378,15 +395,15 @@ static void compile_while_stmt(compiler_t *compiler, const ast_node_t *node) {
 	loop_start = current_chunk(compiler)->count;
 
 	compile_expr(compiler, node->as.while_stmt.condition);
-	exit_jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line);
-	emit_byte(compiler, OP_POP, node->line);
+	exit_jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line, node->column);
+	emit_byte(compiler, OP_POP, node->line, node->column);
 
 	compile_block_stmt(compiler, node->as.while_stmt.body);
 
-	emit_loop(compiler, loop_start, node->line);
+	emit_loop(compiler, loop_start, node->line, node->column);
 
 	patch_jump(compiler, exit_jump, node->line);
-	emit_byte(compiler, OP_POP, node->line);
+	emit_byte(compiler, OP_POP, node->line, node->column);
 }
 
 static void compile_for_stmt(compiler_t *compiler, const ast_node_t *node) {
@@ -408,47 +425,47 @@ static void compile_for_stmt(compiler_t *compiler, const ast_node_t *node) {
 	exit_jump = 0;
 	if (node->as.for_stmt.condition != NULL) {
 		compile_expr(compiler, node->as.for_stmt.condition);
-		exit_jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line);
-		emit_byte(compiler, OP_POP, node->line);
+		exit_jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line, node->column);
+		emit_byte(compiler, OP_POP, node->line, node->column);
 		has_exit_jump = true;
 	}
 
 	if (node->as.for_stmt.increment != NULL) {
-		body_jump = emit_jump(compiler, OP_JUMP, node->line);
+		body_jump = emit_jump(compiler, OP_JUMP, node->line, node->column);
 		increment_start = current_chunk(compiler)->count;
 
 		compile_expr(compiler, node->as.for_stmt.increment);
-		emit_byte(compiler, OP_POP, node->line);
+		emit_byte(compiler, OP_POP, node->line, node->column);
 
-		emit_loop(compiler, loop_start, node->line);
+		emit_loop(compiler, loop_start, node->line, node->column);
 		loop_start = increment_start;
 		patch_jump(compiler, body_jump, node->line);
 	}
 
 	compile_block_stmt(compiler, node->as.for_stmt.body);
 
-	emit_loop(compiler, loop_start, node->line);
+	emit_loop(compiler, loop_start, node->line, node->column);
 
 	if (has_exit_jump) {
 		patch_jump(compiler, exit_jump, node->line);
-		emit_byte(compiler, OP_POP, node->line);
+		emit_byte(compiler, OP_POP, node->line, node->column);
 	}
 
-	end_scope(compiler, node->line);
+	end_scope(compiler, node->line, node->column);
 }
 
 static void compile_return_stmt(compiler_t *compiler, const ast_node_t *node) {
 	if (node->as.return_stmt.value != NULL) {
 		compile_expr(compiler, node->as.return_stmt.value);
 	} else {
-		emit_byte(compiler, OP_NULL, node->line);
+		emit_byte(compiler, OP_NULL, node->line, node->column);
 	}
-	emit_byte(compiler, OP_RETURN, node->line);
+	emit_byte(compiler, OP_RETURN, node->line, node->column);
 }
 
 static void compile_expr_stmt(compiler_t *compiler, const ast_node_t *node) {
 	compile_expr(compiler, node->as.expr_stmt.expression);
-	emit_byte(compiler, OP_POP, node->line);
+	emit_byte(compiler, OP_POP, node->line, node->column);
 }
 
 static void compile_expr(compiler_t *compiler, const ast_node_t *node) {
@@ -476,24 +493,24 @@ static void compile_expr(compiler_t *compiler, const ast_node_t *node) {
 			compile_identifier_expr(compiler, node);
 			break;
 		case AST_INT_LITERAL:
-			emit_constant(compiler, value_int(parse_int_literal(node->as.literal.token)), node->line);
+			emit_constant(compiler, value_int(parse_int_literal(node->as.literal.token)), node->line, node->column);
 			break;
 		case AST_FLOAT_LITERAL:
-			emit_constant(compiler, value_float(parse_float_literal(node->as.literal.token)), node->line);
+			emit_constant(compiler, value_float(parse_float_literal(node->as.literal.token)), node->line, node->column);
 			break;
 		case AST_STRING_LITERAL: {
 			obj_string_t *string = object_new_string_from_literal(compiler->objects, compiler->strings, node->as.literal.token.start + 1, node->as.literal.token.length - 2);
-			emit_constant(compiler, value_obj((obj_t *)string), node->line);
+			emit_constant(compiler, value_obj((obj_t *)string), node->line, node->column);
 			break;
 		}
 		case AST_BOOL_LITERAL:
-			emit_byte(compiler, node->as.literal.token.type == TOKEN_TRUE ? OP_TRUE : OP_FALSE, node->line);
+			emit_byte(compiler, node->as.literal.token.type == TOKEN_TRUE ? OP_TRUE : OP_FALSE, node->line, node->column);
 			break;
 		case AST_NULL_LITERAL:
-			emit_byte(compiler, OP_NULL, node->line);
+			emit_byte(compiler, OP_NULL, node->line, node->column);
 			break;
 		default:
-			compiler_error(compiler, node->line, "expected an expression");
+			compiler_error(compiler, node->line, node->column, "compiler::unsupported-expression", "expected an expression");
 			break;
 	}
 }
@@ -506,14 +523,14 @@ static void compile_assign_expr(compiler_t *compiler, const ast_node_t *node) {
 	if (node->as.assign_expr.target->kind == AST_IDENTIFIER_EXPR) {
 		slot = resolve_local(compiler, node->as.assign_expr.target->as.identifier_expr.name);
 		if (slot == -1) {
-			compiler_error(compiler, node->line, "cannot assign to an undeclared or non-local variable");
+			compiler_error(compiler, node->line, node->column, "compiler::undeclared-assignment-target", "cannot assign to an undeclared or non-local variable");
 			return;
 		}
-		emit_bytes(compiler, OP_SET_LOCAL, (uint8_t)slot, node->line);
+		emit_bytes(compiler, OP_SET_LOCAL, (uint8_t)slot, node->line, node->column);
 		return;
 	}
 
-	compiler_error(compiler, node->line, "assignment to member expressions is not supported yet");
+	compiler_error(compiler, node->line, node->column, "compiler::unsupported-member-assignment", "assignment to member expressions is not supported yet");
 }
 
 static void compile_binary_expr(compiler_t *compiler, const ast_node_t *node) {
@@ -535,11 +552,11 @@ static void compile_binary_expr(compiler_t *compiler, const ast_node_t *node) {
 		case TOKEN_GREATER: opcode = OP_GREATER; break;
 		case TOKEN_GREATER_EQUAL: opcode = OP_GREATER_EQUAL; break;
 		default:
-			compiler_error(compiler, node->line, "unsupported binary operator");
+			compiler_error(compiler, node->line, node->column, "compiler::unsupported-binary-operator", "unsupported binary operator");
 			return;
 	}
 
-	emit_byte(compiler, opcode, node->line);
+	emit_byte(compiler, opcode, node->line, node->column);
 }
 
 /* && and || short-circuit via jumps instead of compiling to a plain binary
@@ -552,17 +569,17 @@ static void compile_logical_expr(compiler_t *compiler, const ast_node_t *node) {
 	compile_expr(compiler, node->as.binary_expr.left);
 
 	if (node->as.binary_expr.op == TOKEN_AMP_AMP) {
-		jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line);
-		emit_byte(compiler, OP_POP, node->line);
+		jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line, node->column);
+		emit_byte(compiler, OP_POP, node->line, node->column);
 		compile_expr(compiler, node->as.binary_expr.right);
 		patch_jump(compiler, jump, node->line);
 		return;
 	}
 
-	jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line);
-	end_jump = emit_jump(compiler, OP_JUMP, node->line);
+	jump = emit_jump(compiler, OP_JUMP_IF_FALSE, node->line, node->column);
+	end_jump = emit_jump(compiler, OP_JUMP, node->line, node->column);
 	patch_jump(compiler, jump, node->line);
-	emit_byte(compiler, OP_POP, node->line);
+	emit_byte(compiler, OP_POP, node->line, node->column);
 	compile_expr(compiler, node->as.binary_expr.right);
 	patch_jump(compiler, end_jump, node->line);
 }
@@ -572,13 +589,13 @@ static void compile_unary_expr(compiler_t *compiler, const ast_node_t *node) {
 
 	switch (node->as.unary_expr.op) {
 		case TOKEN_MINUS:
-			emit_byte(compiler, OP_NEGATE, node->line);
+			emit_byte(compiler, OP_NEGATE, node->line, node->column);
 			break;
 		case TOKEN_BANG:
-			emit_byte(compiler, OP_NOT, node->line);
+			emit_byte(compiler, OP_NOT, node->line, node->column);
 			break;
 		default:
-			compiler_error(compiler, node->line, "unsupported unary operator");
+			compiler_error(compiler, node->line, node->column, "compiler::unsupported-unary-operator", "unsupported unary operator");
 			break;
 	}
 }
@@ -591,7 +608,7 @@ static void compile_call_expr(compiler_t *compiler, const ast_node_t *node) {
 
 	arg_count = node->as.call_expr.args.count;
 	if (arg_count > UINT8_MAX) {
-		compiler_error(compiler, node->line, "a call can have at most 255 arguments");
+		compiler_error(compiler, node->line, node->column, "compiler::too-many-arguments", "a call can have at most 255 arguments");
 		arg_count = 0;
 	}
 
@@ -599,12 +616,12 @@ static void compile_call_expr(compiler_t *compiler, const ast_node_t *node) {
 		compile_expr(compiler, node->as.call_expr.args.items[i]);
 	}
 
-	emit_bytes(compiler, OP_CALL, (uint8_t)arg_count, node->line);
+	emit_bytes(compiler, OP_CALL, (uint8_t)arg_count, node->line, node->column);
 }
 
 static void compile_member_expr(compiler_t *compiler, const ast_node_t *node) {
 	compile_expr(compiler, node->as.member_expr.object);
-	emit_name_op(compiler, OP_GET_PROPERTY, node->as.member_expr.name, node->line);
+	emit_name_op(compiler, OP_GET_PROPERTY, node->as.member_expr.name, node->line, node->column);
 }
 
 static void compile_identifier_expr(compiler_t *compiler, const ast_node_t *node) {
@@ -612,14 +629,14 @@ static void compile_identifier_expr(compiler_t *compiler, const ast_node_t *node
 
 	slot = resolve_local(compiler, node->as.identifier_expr.name);
 	if (slot != -1) {
-		emit_bytes(compiler, OP_GET_LOCAL, (uint8_t)slot, node->line);
+		emit_bytes(compiler, OP_GET_LOCAL, (uint8_t)slot, node->line, node->column);
 		return;
 	}
 
-	emit_name_op(compiler, OP_GET_GLOBAL, node->as.identifier_expr.name, node->line);
+	emit_name_op(compiler, OP_GET_GLOBAL, node->as.identifier_expr.name, node->line, node->column);
 }
 
-obj_function_t *compiler_compile(const ast_node_t *program, const char *filename, obj_t **objects, table_t *strings) {
+obj_function_t *compiler_compile(const ast_node_t *program, const char *filename, const char *source, obj_t **objects, table_t *strings) {
 	compiler_t script;
 	size_t i;
 	const ast_node_t *fn_node;
@@ -635,6 +652,7 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 	script.objects = objects;
 	script.strings = strings;
 	script.filename = filename;
+	script.source = source;
 	script.had_error = false;
 	script.local_count = 0;
 	script.scope_depth = 0;
@@ -649,22 +667,22 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 			found_main = true;
 		}
 
-		compile_function_decl(fn_node, objects, strings, filename, &had_error, &fn);
+		compile_function_decl(fn_node, objects, strings, filename, source, &had_error, &fn);
 
-		emit_constant(&script, value_obj((obj_t *)fn), fn_node->line);
-		emit_name_op(&script, OP_DEFINE_GLOBAL, fn_node->as.function_decl.name, fn_node->line);
+		emit_constant(&script, value_obj((obj_t *)fn), fn_node->line, fn_node->column);
+		emit_name_op(&script, OP_DEFINE_GLOBAL, fn_node->as.function_decl.name, fn_node->line, fn_node->column);
 	}
 
 	if (!found_main) {
-		compiler_error(&script, program->line, "no 'main' function found");
+		compiler_error(&script, program->line, program->column, "compiler::missing-main", "no 'main' function found");
 	}
 
-	emit_name_op_str(&script, OP_GET_GLOBAL, "main", 4, program->line);
-	emit_bytes(&script, OP_CALL, 0, program->line);
-	emit_byte(&script, OP_POP, program->line);
+	emit_name_op_str(&script, OP_GET_GLOBAL, "main", 4, program->line, program->column);
+	emit_bytes(&script, OP_CALL, 0, program->line, program->column);
+	emit_byte(&script, OP_POP, program->line, program->column);
 
-	emit_byte(&script, OP_NULL, program->line);
-	emit_byte(&script, OP_RETURN, program->line);
+	emit_byte(&script, OP_NULL, program->line, program->column);
+	emit_byte(&script, OP_RETURN, program->line, program->column);
 
 	had_error = had_error || script.had_error;
 

@@ -25,16 +25,16 @@ static bool native_assert(vm_t *vm, int arg_count, value_t *args, value_t *out_r
 	obj_string_t *message;
 
 	if (arg_count != 1 && arg_count != 2) {
-		vm_runtime_error(vm, "assert expects 1 or 2 arguments but got %d", arg_count);
+		vm_runtime_error(vm, "vm::argument-count-mismatch", "assert expects 1 or 2 arguments but got %d", arg_count);
 		return false;
 	}
 
 	if (value_is_falsey(args[0])) {
 		if (arg_count == 2 && value_is_obj(args[1]) && value_as_obj(args[1])->type == OBJ_STRING) {
 			message = (obj_string_t *)value_as_obj(args[1]);
-			vm_runtime_error(vm, "assertion failed: %.*s", (int)message->length, message->chars);
+			vm_runtime_error(vm, "vm::assertion-failed", "assertion failed: %.*s", (int)message->length, message->chars);
 		} else {
-			vm_runtime_error(vm, "assertion failed");
+			vm_runtime_error(vm, "vm::assertion-failed", "assertion failed");
 		}
 		return false;
 	}
@@ -54,7 +54,7 @@ static void register_global(vm_t *vm, const char *name, native_fn_t function) {
 
 bool stdlib_check_arity(vm_t *vm, const char *fn_name, int arg_count, int expected) {
 	if (arg_count != expected) {
-		vm_runtime_error(vm, "%s expects %d argument(s) but got %d", fn_name, expected, arg_count);
+		vm_runtime_error(vm, "vm::argument-count-mismatch", "%s expects %d argument(s) but got %d", fn_name, expected, arg_count);
 		return false;
 	}
 	return true;

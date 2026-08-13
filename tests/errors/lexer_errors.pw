@@ -1,0 +1,8 @@
+// Lexer-stage error: an unterminated string literal. The lexer reports
+// its own diagnostic (lexer::unterminated-string), and the parser then
+// fails too once it hits the resulting error token while looking for
+// the rest of the block.
+
+fn main() {
+	string s = "this string never closes;
+}

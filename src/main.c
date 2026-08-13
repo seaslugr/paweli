@@ -152,7 +152,7 @@ int main(int argc, char **argv) {
 	objects = NULL;
 	table_init(&strings);
 
-	script = compiler_compile(program, path, &objects, &strings);
+	script = compiler_compile(program, path, source, &objects, &strings);
 
 	if (dump_bytecode) {
 		dump_all_bytecode(objects);
@@ -164,7 +164,7 @@ int main(int argc, char **argv) {
 		fprintf(stderr, "paweli: failed to compile '%s'\n", path);
 		exit_code = 1;
 	} else {
-		vm_init(&vm, &objects, &strings, path, (size_t)stack_size, (int)max_frames);
+		vm_init(&vm, &objects, &strings, path, source, (size_t)stack_size, (int)max_frames);
 		result = vm_run(&vm, script);
 		if (result != VM_OK) {
 			exit_code = 1;

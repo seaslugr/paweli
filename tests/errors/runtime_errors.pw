@@ -1,0 +1,13 @@
+// VM-stage error: this compiles and starts running fine, then fails
+// partway through with a vm::division-by-zero diagnostic and a
+// multi-frame call-stack trace back through divide() to main() to
+// the synthetic <script> frame.
+
+fn divide(int a, int b) -> int {
+	return a / b;
+}
+
+fn main() {
+	print(divide(10, 2));
+	print(divide(10, 0));
+}

@@ -18,7 +18,7 @@ static bool is_digit(char c);
 static bool is_alpha(char c);
 static void begin_token(lexer_t *lexer);
 static token_t make_token(lexer_t *lexer, token_type_t type);
-static token_t error_token(lexer_t *lexer, const char *message);
+static token_t error_token(lexer_t *lexer, const char *code, const char *message);
 static bool skip_line_comment(lexer_t *lexer);
 static bool skip_block_comment(lexer_t *lexer);
 static bool skip_whitespace(lexer_t *lexer);
@@ -96,10 +96,11 @@ static token_t make_token(lexer_t *lexer, token_type_t type) {
 	token.length = (size_t)(lexer->current - lexer->start);
 	token.line = lexer->token_line;
 	token.column = lexer->token_column;
+	token.error_code = NULL;
 	return token;
 }
 
-static token_t error_token(lexer_t *lexer, const char *message) {
+static token_t error_token(lexer_t *lexer, const char *code, const char *message) {
 	token_t token;
 
 	token.type = TOKEN_ERROR;
@@ -107,6 +108,7 @@ static token_t error_token(lexer_t *lexer, const char *message) {
 	token.length = strlen(message);
 	token.line = lexer->token_line;
 	token.column = lexer->token_column;
+	token.error_code = code;
 	return token;
 }
 
@@ -233,17 +235,17 @@ static token_t scan_string(lexer_t *lexer) {
 
 	while (peek(lexer) != '"') {
 		if (is_at_end(lexer) || peek(lexer) == '\n') {
-			return error_token(lexer, "unterminated string literal");
+			return error_token(lexer, "lexer::unterminated-string", "unterminated string literal");
 		}
 
 		if (peek(lexer) == '\\') {
 			advance(lexer);
 			if (is_at_end(lexer)) {
-				return error_token(lexer, "unterminated string literal");
+				return error_token(lexer, "lexer::unterminated-string", "unterminated string literal");
 			}
 			escaped = peek(lexer);
 			if (escaped != 'n' && escaped != 't' && escaped != 'r' && escaped != '\\' && escaped != '"' && escaped != '0') {
-				return error_token(lexer, "invalid escape sequence in string literal");
+				return error_token(lexer, "lexer::invalid-escape-sequence", "invalid escape sequence in string literal");
 			}
 		}
 
@@ -261,7 +263,7 @@ static token_t scan_directive(lexer_t *lexer) {
 	size_t length;
 
 	if (!is_alpha(peek(lexer))) {
-		return error_token(lexer, "expected 'module' or 'moduledef' after '#'");
+		return error_token(lexer, "lexer::directive-missing-name", "expected 'module' or 'moduledef' after '#'");
 	}
 
 	word_start = lexer->current;
@@ -278,7 +280,7 @@ static token_t scan_directive(lexer_t *lexer) {
 		return make_token(lexer, TOKEN_MODULEDEF);
 	}
 
-	return error_token(lexer, "unknown directive (expected #module or #moduledef)");
+	return error_token(lexer, "lexer::unknown-directive", "unknown directive (expected #module or #moduledef)");
 }
 
 /* source must be null-terminated and must outlive the lexer. Tokens are
@@ -298,7 +300,7 @@ token_t lexer_next_token(lexer_t *lexer) {
 
 	if (!skip_whitespace(lexer)) {
 		begin_token(lexer);
-		return error_token(lexer, "unterminated block comment");
+		return error_token(lexer, "lexer::unterminated-block-comment", "unterminated block comment");
 	}
 
 	begin_token(lexer);
@@ -357,17 +359,17 @@ token_t lexer_next_token(lexer_t *lexer) {
 			if (match(lexer, '&')) {
 				return make_token(lexer, TOKEN_AMP_AMP);
 			}
-			return error_token(lexer, "unexpected character '&'");
+			return error_token(lexer, "lexer::unexpected-character", "unexpected character '&'");
 		case '|':
 			if (match(lexer, '|')) {
 				return make_token(lexer, TOKEN_PIPE_PIPE);
 			}
-			return error_token(lexer, "unexpected character '|'");
+			return error_token(lexer, "lexer::unexpected-character", "unexpected character '|'");
 		case '"':
 			return scan_string(lexer);
 		case '#':
 			return scan_directive(lexer);
 	}
 
-	return error_token(lexer, "unexpected character");
+	return error_token(lexer, "lexer::unexpected-character", "unexpected character");
 }
