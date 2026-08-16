@@ -1,0 +1,6 @@
+fn main() {
+	string line = stdlib.read_line();
+	assert(line == "", "read_line() on closed/empty stdin should return an empty string");
+
+	print("io: ok");
+}

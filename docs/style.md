@@ -87,7 +87,7 @@ void process(char *buf, int n) {
 - Use `NULL` for null pointers, never `0`
 
 ## Function Parameters
-Leave parameter lists empty: `void foo()`, not `void foo(void)`. In C, `void foo()` technically means unspecified parameters (K&R style), not zero parameters — but we prefer it for brevity and consistency with how C++ reads.
+Leave parameter lists empty: `void foo()`, not `void foo(void)`. In C, `void foo()` technically means unspecified parameters (K&R style), not zero parameters. We prefer it anyway for brevity and consistency with how C++ reads.
 
 ## Static Functions
 All file-local functions must be marked `static`.
@@ -186,10 +186,10 @@ if (x > 0) {
 Always use braces for control flow bodies, even single-line ones.
 
 ## Switch Statements
-Prefer `switch` over chains of `if/else if` when branching on an enum or small set of known values. Only include `default` when there is genuinely something to do for unhandled cases. For a fully-covered enum where a `default` would be dead code, omit it entirely — do not add `assert(0)` or `__builtin_unreachable()`.
+Prefer `switch` over chains of `if/else if` when branching on an enum or small set of known values. Only include `default` when there is genuinely something to do for unhandled cases. For a fully-covered enum where a `default` would be dead code, omit it entirely. Do not add `assert(0)` or `__builtin_unreachable()`.
 
 ## Performance
-- Code performance is a priority — prefer efficient algorithms and data structures
+- Code performance is a priority. Prefer efficient algorithms and data structures
 - Avoid unnecessary allocations, copies, and indirection
 - Prefer stack allocation over heap where appropriate
 - Be mindful of cache locality

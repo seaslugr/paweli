@@ -1,0 +1,27 @@
+#module "fixtures/geometry"
+
+fn main() {
+	assert(geometry.area(3, 4) == 12);
+	assert(geometry.area(1.5, 2.0) == 3.0);
+	assert(geometry.perimeter(3, 4) == 14);
+
+	// Exported struct: Rect is constructed and read on this side of the
+	// #module boundary using the unqualified name, and passed to/returned
+	// from an exported function, proving the imported struct_def_t is
+	// the same type on both sides.
+	Rect r = Rect { w: 5, h: 4 };
+	assert(geometry.rect_area(r) == 20);
+	Rect made = geometry.make_rect(6, 7);
+	assert(made.w == 6);
+	assert(made.h == 7);
+	assert(geometry.rect_area(made) == 42);
+
+	// Rect's struct functions cross the #module boundary too, auto-exported
+	// with the type, and referenced unqualified (Rect.square, not
+	// geometry.Rect.square), the same way the type itself already is.
+	Rect sq = Rect.square(4);
+	assert(sq.w == 4 && sq.h == 4);
+	assert(Rect.area(sq) == 16);
+
+	print("modules: ok");
+}

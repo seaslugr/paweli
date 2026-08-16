@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: all build run debug relasserts reldebug release clean count test
+.PHONY: all build run debug relasserts reldebug release clean count test speedtest
 
 # Default: local debug build, outputs to build/debug/.
 all: build
@@ -36,3 +36,9 @@ count:
 
 test: build
 	./scripts/run_tests.sh
+
+# Compares .pw source, .paw bytecode, --bin native exe, and a hand-written
+# C equivalent across bench/*, using hyperfine. Needs a Release build
+# (optimized, no sanitizers) to give paweli a fair shot against C.
+speedtest: release
+	./scripts/speedtest.sh

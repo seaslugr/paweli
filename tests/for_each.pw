@@ -1,0 +1,73 @@
+fn main() {
+	int sum = 0;
+	for (int i : 0..10) {
+		sum = sum + i;
+	}
+	assert(sum == 45, "range 0..10 sums 0 through 9");
+
+	int total = 0;
+	for (int i : 0..10) {
+		if (i == 3) {
+			continue;
+		}
+		if (i == 7) {
+			break;
+		}
+		total = total + i;
+	}
+	assert(total == 1 + 2 + 4 + 5 + 6, "range form supports break/continue");
+
+	int never = 0;
+	for (int i : 5..5) {
+		never = never + 1;
+	}
+	assert(never == 0, "an empty range does nothing");
+
+	int[] nums = [10, 20, 30, 40];
+	int arr_sum = 0;
+	for (int n : nums) {
+		arr_sum = arr_sum + n;
+	}
+	assert(arr_sum == 100, "foreach over an array");
+
+	string[] names = ["alice", "bob", "carol", "dave"];
+	string joined = "";
+	for (string name : names) {
+		if (name == "bob") {
+			continue;
+		}
+		if (name == "dave") {
+			break;
+		}
+		joined = stdlib.concat(joined, name);
+	}
+	assert(joined == "alicecarol", "foreach over an array supports break/continue");
+
+	string chars = "";
+	for (string c : "abc") {
+		chars = stdlib.concat(chars, c);
+	}
+	assert(chars == "abc", "foreach over a string iterates its characters");
+
+	int product_sum = 0;
+	for (int a : 0..3) {
+		for (int b : 0..3) {
+			product_sum = product_sum + a * b;
+		}
+	}
+	assert(product_sum == 9, "nested range loops don't interfere with each other");
+
+	int[] outer_matches = [1, 2, 3];
+	int[] inner_matches = [1, 2, 3];
+	int pair_count = 0;
+	for (int x : outer_matches) {
+		for (int y : inner_matches) {
+			if (x == y) {
+				pair_count = pair_count + 1;
+			}
+		}
+	}
+	assert(pair_count == 3, "nested foreach loops don't interfere with each other");
+
+	print("for_each: ok");
+}

@@ -1,0 +1,14 @@
+#moduledef "fixtures/exported_structs"
+
+struct Rect {
+	int w;
+	int h;
+}
+
+struct Hidden {
+	int secret;
+}
+
+fn main() {
+	export Rect;
+}

@@ -1,0 +1,87 @@
+// File-private global mutable variables: `type name = expr;` at true
+// top level, outside any function. See docs/paweli/language.md.
+
+int counter = 0;
+int base = 10;
+int doubled_base = base * 2;
+
+fn bump() {
+	counter += 1;
+}
+
+fn read_counter() -> int {
+	return counter;
+}
+
+fn compute_offset() -> int {
+	return base + 5;
+}
+
+int offset_from_function = compute_offset();
+
+int[] history = [];
+string label = "start";
+
+fn record(int value) {
+	stdlib.push(history, value);
+}
+
+fn relabel(string new_label) {
+	label = new_label;
+}
+
+fn shadow_test() -> int {
+	int counter = 999;
+	counter += 1;
+	return counter;
+}
+
+fn main() {
+	// Read/mutate directly.
+	assert(counter == 0);
+	counter = 5;
+	assert(counter == 5);
+
+	// Compound assignment on a global.
+	counter += 10;
+	assert(counter == 15, "compound assignment must read-modify-write the same global");
+
+	// Cross-function sharing: the original motivating case. Three
+	// separate functions all see and mutate the same storage with no
+	// struct/array passed between them.
+	counter = 0;
+	bump();
+	bump();
+	bump();
+	assert(read_counter() == 3, "bump() and read_counter() must share one global, not private copies");
+
+	// An initializer may call any function in the file (compute_offset()
+	// is declared after this global in the file, forward reference into
+	// the function-signature space, which already worked before this
+	// feature) and may reference an earlier-declared global (base,
+	// declared before doubled_base/offset_from_function).
+	assert(doubled_base == 20);
+	assert(offset_from_function == 15);
+
+	// A local declared with the same name as a global shadows it: no
+	// way to observe the global from inside shadow_test() at all.
+	assert(shadow_test() == 1000);
+	assert(counter == 3, "a same-named local must not alias the global");
+
+	// A global array is a reference type, same as a local one: every
+	// read of `history` (from main() or from record()) returns the
+	// identical array object, so pushes from another function are
+	// visible here with no reassignment needed.
+	record(1);
+	record(2);
+	record(3);
+	assert(stdlib.length(history) == 3);
+	assert(history[0] == 1);
+	assert(history[1] == 2);
+	assert(history[2] == 3);
+
+	// Plain (non-compound) OP_SET_GLOBAL on a non-numeric type.
+	assert(label == "start");
+	relabel("updated");
+	assert(label == "updated", "a string-typed global must be reassignable from another function");
+}

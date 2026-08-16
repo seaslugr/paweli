@@ -1,0 +1,66 @@
+fn main() {
+	int i = 0;
+	int sum = 0;
+	while (i < 10) {
+		i = i + 1;
+		if (i == 3) {
+			continue;
+		}
+		if (i == 7) {
+			break;
+		}
+		sum = sum + i;
+	}
+	assert(sum == 1 + 2 + 4 + 5 + 6, "while: continue skips 3, break stops before 7");
+	assert(i == 7, "while stopped exactly at 7");
+
+	int total = 0;
+	for (int j = 0; j < 10; j = j + 1) {
+		int doubled = j * 2;
+		if (doubled == 6) {
+			continue;
+		}
+		if (j == 8) {
+			break;
+		}
+		total = total + doubled;
+	}
+	assert(total == 0 + 2 + 4 + 8 + 10 + 12 + 14, "for: continue skips j==3, break stops before j==8, local declared each iteration pops correctly");
+
+	int outer_count = 0;
+	int inner_total = 0;
+	for (int a = 0; a < 3; a = a + 1) {
+		outer_count = outer_count + 1;
+		for (int b = 0; b < 10; b = b + 1) {
+			if (b == 2) {
+				break;
+			}
+			inner_total = inner_total + 1;
+		}
+	}
+	assert(outer_count == 3, "break only exits the inner loop");
+	assert(inner_total == 6, "inner loop broke after 2 iterations, 3 times");
+
+	int c = 0;
+	for (int k = 0; k < 5; k = k + 1) {
+		{
+			int nested = k + 100;
+			if (k == 2) {
+				continue;
+			}
+		}
+		c = c + 1;
+	}
+	assert(c == 4, "continue from inside a nested block still pops that block's own local");
+
+	int n = 0;
+	for (;;) {
+		n = n + 1;
+		if (n >= 5) {
+			break;
+		}
+	}
+	assert(n == 5, "break works in a for(;;) with no condition to patch a jump onto");
+
+	print("break_continue: ok");
+}

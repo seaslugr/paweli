@@ -25,6 +25,56 @@ fn count_while(int n) -> int {
 	return count;
 }
 
+// A local declared fresh inside a loop's own body (as opposed to
+// sum_to()'s `i`, declared once before the loop starts): its
+// "declaration" is nothing but the initializer's pushed value landing
+// at the local's stack slot, no dedicated opcode of its own, so this
+// same bytecode (and the JIT's own translation of it) runs once
+// per iteration, not once for the whole function. Exercises that
+// distinction directly, heavily favoring `doubled` for register
+// allocation (four references vs. total/i's two and three) so it's
+// the one actually put through it.
+fn sum_doubled(int n) -> int {
+	int total = 0;
+	int i = 0;
+	while (i < n) {
+		int doubled = i;
+		doubled = doubled + doubled;
+		doubled = doubled + 1;
+		total = total + doubled;
+		i = i + 1;
+	}
+	return total;
+}
+
+// A regression test for JIT register-allocation phase R2a: three hot
+// numeric locals (a, b, c) in one loop compete with the loop counter
+// (i) for the JIT's up-to-3 register-allocated slots (r15/r10/r11;
+// see jit_compile.c's select_register_locals()), and c is fed through
+// a real function call every iteration. r10/r11 are caller-saved, so
+// bump_by_one()'s call clobbers whichever of them is bound unless
+// emit_call() correctly spills it before the call and reloads it
+// after. If that spill/reload were missing or wrong, c (and whatever
+// else shares a register with it across iterations) would come out
+// corrupted, not just slow.
+fn bump_by_one(int x) -> int {
+	return x + 1;
+}
+
+fn three_counters(int n) -> int {
+	int a = 0;
+	int b = 0;
+	int c = 0;
+	int i = 0;
+	while (i < n) {
+		a = a + 1;
+		b = b + 2;
+		c = bump_by_one(c);
+		i = i + 1;
+	}
+	return a + b + c;
+}
+
 fn main() {
 	assert(classify(-5) == "negative");
 	assert(classify(0) == "zero");
@@ -34,6 +84,10 @@ fn main() {
 	assert(sum_to(0) == 0);
 
 	assert(count_while(5) == 5);
+
+	assert(sum_doubled(6) == 36);
+
+	assert(three_counters(1000) == 1000 + 2000 + 1000, "r10/r11 spill/reload around a call inside the hot loop must not corrupt the register-allocated counters");
 
 	int i = 0;
 	int total = 0;

@@ -1,0 +1,17 @@
+// An uncaught throw: propagates through vm_runtime_error() exactly like
+// a VM-triggered failure (see runtime_errors.pw's division by zero).
+// same "uncaught -> vm_print_uncaught_error() renders it at the top
+// level" path, just with code "user::thrown" instead of a "vm::*" one.
+// No enclosing try/catch here, so nothing intercepts it before that.
+
+fn validate(int age) {
+	if (age < 0) {
+		throw "age cannot be negative";
+	}
+	print(age);
+}
+
+fn main() {
+	validate(30);
+	validate(-1);
+}

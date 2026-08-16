@@ -1,0 +1,10 @@
+fn main() {
+	string s = "";
+	int n = 20000;
+
+	for (int i : 0..n) {
+		s = stdlib.concat(s, "x");
+	}
+
+	print(stdlib.length(s));
+}

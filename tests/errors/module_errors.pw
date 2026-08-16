@@ -1,0 +1,19 @@
+// Module-boundary compiler errors involving struct export, using the
+// small fixtures/exported_structs.pw module below. Several independent
+// mistakes in one file, for manual inspection (this file, like
+// compiler_errors.pw etc., is intentionally never expected to compile).
+
+#module "fixtures/exported_structs"
+
+// Colliding with the imported (exported) Rect: a hard compile error,
+// not silent shadowing.
+struct Rect {
+	int side;
+}
+
+fn main() {
+	// Hidden is declared in exported_structs.pw but never `export`ed:
+	// stays invisible to an importer, same as an unexported function.
+	Hidden h = Hidden { secret: 1 };
+	print(h.secret);
+}

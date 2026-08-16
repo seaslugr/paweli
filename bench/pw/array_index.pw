@@ -1,0 +1,29 @@
+// Pure JIT'd array-indexing workload: a build phase (stdlib.push, a
+// native), then three loops that are nothing but OP_GET_INDEX /
+// OP_SET_INDEX over a single array with a register-allocated counter.
+// This is the shape the JIT's array-indexing fast path
+// (jit_compile.c's emit_op_get_index()/emit_op_set_index()) targets --
+// unlike array_sort.pw, whose paweli-side hot code (the comparator
+// closure) does no indexing at all.
+fn main() {
+	int n = 300000;
+	int[] arr = [];
+	for (int i : 0..n) {
+		stdlib.push(arr, i);
+	}
+
+	int total = 0;
+	for (int i : 0..n) {
+		total = total + arr[i];
+	}
+	for (int i : 0..n) {
+		arr[i] = arr[i] + 1;
+	}
+	for (int i : 0..n) {
+		total = total + arr[i];
+	}
+
+	print(total);
+	print(arr[0]);
+	print(arr[n - 1]);
+}

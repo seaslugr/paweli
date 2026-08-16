@@ -19,9 +19,7 @@ if(CCACHE_PROGRAM)
     message(STATUS "ccache found, using it to speed up rebuilds: ${CCACHE_PROGRAM}")
 endif()
 
-set(PAWELI_SOURCES
-    src/main.c
-
+set(PAWELI_LIB_SOURCES
     src/diagnostics/diagnostic.c
 
     src/lexer/lexer.c
@@ -32,6 +30,17 @@ set(PAWELI_SOURCES
 
     src/compiler/chunk.c
     src/compiler/compiler.c
+    src/compiler/type.c
+    src/compiler/signature.c
+    src/compiler/native_signatures.c
+    src/compiler/paw.c
+
+    src/platform/exe.c
+
+    src/jit/jit_asm.c
+    src/jit/jit_exec_mem.c
+    src/jit/jit_compile.c
+    src/jit/jit_dispatch.c
 
     src/runtime/value.c
     src/runtime/object.c
@@ -44,12 +53,11 @@ set(PAWELI_SOURCES
     src/stdlib/math.c
     src/stdlib/string.c
     src/stdlib/convert.c
+    src/stdlib/array.c
+    src/stdlib/io.c
 )
 
-add_executable(paweli ${PAWELI_SOURCES})
-target_include_directories(paweli PRIVATE src)
-
-target_compile_options(paweli PRIVATE
+set(PAWELI_WARNING_OPTIONS
     -Wall
     -Wextra
     -Wno-unused-parameter
@@ -61,12 +69,33 @@ target_compile_options(paweli PRIVATE
     $<$<CONFIG:Release>:-DNDEBUG -Ofast -Werror>
 )
 
-target_link_options(paweli PRIVATE
+set(PAWELI_SANITIZE_LINK_OPTIONS
     $<$<CONFIG:Debug>:-fsanitize=address,undefined>
     $<$<CONFIG:RelWithDebInfo>:-s>
     $<$<CONFIG:Release>:-s>
 )
 
+add_executable(paweli src/main.c ${PAWELI_LIB_SOURCES})
+target_include_directories(paweli PRIVATE src)
+target_compile_options(paweli PRIVATE ${PAWELI_WARNING_OPTIONS})
+target_link_options(paweli PRIVATE ${PAWELI_SANITIZE_LINK_OPTIONS})
+
 if(UNIX)
     target_link_libraries(paweli PRIVATE m)
+endif()
+
+# Standalone C harness for the JIT subsystem (src/jit/), which -- unlike
+# every other feature in this codebase -- isn't reachable end-to-end
+# through a .pw script until src/jit/jit_dispatch.c wires hotness-driven
+# compilation into call_value() (see docs/todo.md's JIT phase plan).
+# Drives jit_compile_function()/jit_entry directly against a hand-built
+# chunk_t, the same way scripts/run_tests.sh drives paweli against
+# tests/*.pw.
+add_executable(jit_selftest tests/jit/jit_selftest.c ${PAWELI_LIB_SOURCES})
+target_include_directories(jit_selftest PRIVATE src)
+target_compile_options(jit_selftest PRIVATE ${PAWELI_WARNING_OPTIONS})
+target_link_options(jit_selftest PRIVATE ${PAWELI_SANITIZE_LINK_OPTIONS})
+
+if(UNIX)
+    target_link_libraries(jit_selftest PRIVATE m)
 endif()

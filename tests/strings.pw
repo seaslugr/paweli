@@ -1,0 +1,25 @@
+fn main() {
+	string s = "3 + 4";
+	string[] tokens = stdlib.split(s, " ");
+	assert(stdlib.length(tokens) == 3);
+	assert(tokens[0] == "3");
+	assert(tokens[1] == "+");
+	assert(tokens[2] == "4");
+
+	string[] collapsed = stdlib.split("a   b   c", " ");
+	assert(stdlib.length(collapsed) == 3);
+	assert(collapsed[0] == "a");
+	assert(collapsed[1] == "b");
+	assert(collapsed[2] == "c");
+
+	string[] multi_char = stdlib.split("one::two::three", "::");
+	assert(stdlib.length(multi_char) == 3);
+	assert(multi_char[1] == "two");
+
+	assert(s[0] == "3");
+	assert(s[2] == "+");
+	assert(s[4] == "4");
+	assert(stdlib.length(s[0]) == 1);
+
+	print("strings: ok");
+}

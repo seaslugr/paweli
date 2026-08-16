@@ -12,3 +12,91 @@ fn main() {
 
 	print(a);
 }
+
+// Nested fns are not hoisted the way top-level fns are: a sibling
+// declared later in the same block is not visible yet, so calling it
+// early is just an ordinary undefined-name error, the same as calling
+// any not-yet-declared local would be. Mutual recursion between two
+// nested fns is deliberately not supported.
+fn no_mutual_recursion_between_nested_fns() {
+	fn a() {
+		b();
+	}
+
+	fn b() {
+		a();
+	}
+
+	a();
+}
+
+// Bitwise operators are int-only, checked statically whenever both
+// operand types are already known. Unlike + - * /, there is no float
+// branch to promote into.
+fn bitwise_operands_must_be_int() {
+	float f = 1.5;
+	int x = f & 1;
+}
+
+// Compound assignment checks the computed result can still fit back into
+// the target, exactly like plain assignment already does.
+fn compound_assign_result_must_fit_target() {
+	int n = 5;
+	n += 1.5;
+}
+
+// Unknown decorator names are rejected, not silently ignored.
+@bogus
+fn unknown_decorator_is_rejected() {
+}
+
+// @test functions must take no parameters, mirroring main().
+@test
+fn test_function_cannot_take_parameters(int x) {
+	print(x);
+}
+
+// A struct function name that doesn't exist on the struct: behaves like
+// an unknown module member already does, not a crash or a silent no-op.
+struct Vec2 {
+	int x;
+	int y;
+}
+
+fn calling_an_unknown_struct_function() {
+	Vec2 v = Vec2 { x: 1, y: 2 };
+	Vec2.normalize(v);
+}
+
+// throw only ever carries a string, no structured/typed error payload
+// for v1, so anything else is rejected statically rather than coerced.
+fn throw_requires_a_string() {
+	throw 404;
+}
+
+// A caught error is always a string (it's rendered from
+// vm->error_message, itself always plain text), so a catch clause's
+// binding must be declared as such, like throw_requires_a_string()
+// above, checked statically rather than silently coerced.
+fn catch_binding_must_be_string() {
+	try {
+		int x = 1;
+		print(x);
+	} catch(int code) {
+		print(code);
+	}
+}
+
+// Nested array element types are checked one level at a time: `int[][]`
+// holds `int[]`, not `int`, so a literal whose elements are plain ints
+// is rejected statically rather than being coerced or left to fail at
+// runtime.
+fn nested_array_element_type_mismatch() {
+	int[][] grid = [1, 2, 3];
+}
+
+// The inner literal's own elements must match too: `["a", "b"]` is a
+// string[], not an int[], so it cannot sit in an int[][].
+fn nested_array_inner_type_mismatch() {
+	int[][] grid = [[1, 2], ["a", "b"]];
+}

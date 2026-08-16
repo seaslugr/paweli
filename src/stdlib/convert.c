@@ -28,7 +28,7 @@ static bool stdlib_to_string(vm_t *vm, int arg_count, value_t *args, value_t *ou
 		return false;
 	}
 
-	result = object_new_string(vm->objects, vm->strings, buffer, (size_t)written);
+	result = object_new_string(vm->heap, vm->strings, buffer, (size_t)written);
 	*out_result = value_obj((obj_t *)result);
 	return true;
 }

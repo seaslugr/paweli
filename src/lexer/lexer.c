@@ -180,11 +180,17 @@ static const keyword_t keywords[] = {
 	{"else", TOKEN_ELSE},
 	{"while", TOKEN_WHILE},
 	{"for", TOKEN_FOR},
+	{"break", TOKEN_BREAK},
+	{"continue", TOKEN_CONTINUE},
 	{"return", TOKEN_RETURN},
 	{"true", TOKEN_TRUE},
 	{"false", TOKEN_FALSE},
 	{"null", TOKEN_NULL},
 	{"export", TOKEN_EXPORT},
+	{"struct", TOKEN_STRUCT},
+	{"try", TOKEN_TRY},
+	{"catch", TOKEN_CATCH},
+	{"throw", TOKEN_THROW},
 };
 
 static token_type_t identifier_type(lexer_t *lexer) {
@@ -335,36 +341,53 @@ token_t lexer_next_token(lexer_t *lexer) {
 			return make_token(lexer, TOKEN_COMMA);
 		case ';':
 			return make_token(lexer, TOKEN_SEMICOLON);
+		case ':':
+			return make_token(lexer, TOKEN_COLON);
 		case '.':
-			return make_token(lexer, TOKEN_DOT);
+			return make_token(lexer, match(lexer, '.') ? TOKEN_DOT_DOT : TOKEN_DOT);
 		case '+':
-			return make_token(lexer, TOKEN_PLUS);
+			return make_token(lexer, match(lexer, '=') ? TOKEN_PLUS_EQUAL : TOKEN_PLUS);
 		case '-':
-			return make_token(lexer, match(lexer, '>') ? TOKEN_ARROW : TOKEN_MINUS);
+			if (match(lexer, '>')) {
+				return make_token(lexer, TOKEN_ARROW);
+			}
+			return make_token(lexer, match(lexer, '=') ? TOKEN_MINUS_EQUAL : TOKEN_MINUS);
 		case '*':
-			return make_token(lexer, TOKEN_STAR);
+			return make_token(lexer, match(lexer, '=') ? TOKEN_STAR_EQUAL : TOKEN_STAR);
 		case '%':
-			return make_token(lexer, TOKEN_PERCENT);
+			return make_token(lexer, match(lexer, '=') ? TOKEN_PERCENT_EQUAL : TOKEN_PERCENT);
 		case '/':
-			return make_token(lexer, TOKEN_SLASH);
+			return make_token(lexer, match(lexer, '=') ? TOKEN_SLASH_EQUAL : TOKEN_SLASH);
 		case '!':
 			return make_token(lexer, match(lexer, '=') ? TOKEN_BANG_EQUAL : TOKEN_BANG);
 		case '=':
 			return make_token(lexer, match(lexer, '=') ? TOKEN_EQUAL_EQUAL : TOKEN_EQUAL);
 		case '<':
+			if (match(lexer, '<')) {
+				return make_token(lexer, match(lexer, '=') ? TOKEN_LESS_LESS_EQUAL : TOKEN_LESS_LESS);
+			}
 			return make_token(lexer, match(lexer, '=') ? TOKEN_LESS_EQUAL : TOKEN_LESS);
 		case '>':
+			if (match(lexer, '>')) {
+				return make_token(lexer, match(lexer, '=') ? TOKEN_GREATER_GREATER_EQUAL : TOKEN_GREATER_GREATER);
+			}
 			return make_token(lexer, match(lexer, '=') ? TOKEN_GREATER_EQUAL : TOKEN_GREATER);
 		case '&':
 			if (match(lexer, '&')) {
 				return make_token(lexer, TOKEN_AMP_AMP);
 			}
-			return error_token(lexer, "lexer::unexpected-character", "unexpected character '&'");
+			return make_token(lexer, match(lexer, '=') ? TOKEN_AMP_EQUAL : TOKEN_AMP);
 		case '|':
 			if (match(lexer, '|')) {
 				return make_token(lexer, TOKEN_PIPE_PIPE);
 			}
-			return error_token(lexer, "lexer::unexpected-character", "unexpected character '|'");
+			return make_token(lexer, match(lexer, '=') ? TOKEN_PIPE_EQUAL : TOKEN_PIPE);
+		case '^':
+			return make_token(lexer, match(lexer, '=') ? TOKEN_CARET_EQUAL : TOKEN_CARET);
+		case '~':
+			return make_token(lexer, TOKEN_TILDE);
+		case '@':
+			return make_token(lexer, TOKEN_AT);
 		case '"':
 			return scan_string(lexer);
 		case '#':

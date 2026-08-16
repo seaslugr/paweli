@@ -1,0 +1,30 @@
+fn add(int a, int b) -> int {
+	return a + b;
+}
+
+fn add(float a, float b) -> float {
+	return a + b;
+}
+
+fn add(string a, string b) -> string {
+	return stdlib.concat(a, b);
+}
+
+fn greet(string name) -> string {
+	return stdlib.concat("Hello, ", name);
+}
+
+fn greet(string first, string last) -> string {
+	return greet(stdlib.concat(stdlib.concat(first, " "), last));
+}
+
+fn main() {
+	assert(add(1, 2) == 3);
+	assert(add(1.5, 2.5) == 4.0);
+	assert(add("foo", "bar") == "foobar");
+
+	assert(greet("Alice") == "Hello, Alice");
+	assert(greet("Alice", "Smith") == "Hello, Alice Smith");
+
+	print("overloading: ok");
+}

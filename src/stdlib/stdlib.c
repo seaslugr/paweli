@@ -5,7 +5,7 @@
 
 static bool native_print(vm_t *vm, int arg_count, value_t *args, value_t *out_result);
 static bool native_assert(vm_t *vm, int arg_count, value_t *args, value_t *out_result);
-static void register_global(vm_t *vm, const char *name, native_fn_t function);
+static void register_global(vm_t *vm, table_t *globals, const char *name, native_fn_t function);
 
 static bool native_print(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	if (arg_count >= 1) {
@@ -43,13 +43,13 @@ static bool native_assert(vm_t *vm, int arg_count, value_t *args, value_t *out_r
 	return true;
 }
 
-static void register_global(vm_t *vm, const char *name, native_fn_t function) {
+static void register_global(vm_t *vm, table_t *globals, const char *name, native_fn_t function) {
 	obj_string_t *key;
 	obj_native_t *native;
 
-	key = object_new_string(vm->objects, vm->strings, name, strlen(name));
-	native = object_new_native(vm->objects, function, name);
-	table_set(&vm->globals, key, value_obj((obj_t *)native));
+	key = object_new_string(vm->heap, vm->strings, name, strlen(name));
+	native = object_new_native(vm->heap, function, name);
+	table_set(globals, key, value_obj((obj_t *)native));
 }
 
 bool stdlib_check_arity(vm_t *vm, const char *fn_name, int arg_count, int expected) {
@@ -64,24 +64,26 @@ void stdlib_register_fn(vm_t *vm, obj_module_t *module, const char *name, native
 	obj_native_t *native;
 	obj_string_t *key;
 
-	native = object_new_native(vm->objects, function, name);
-	key = object_new_string(vm->objects, vm->strings, name, strlen(name));
+	native = object_new_native(vm->heap, function, name);
+	key = object_new_string(vm->heap, vm->strings, name, strlen(name));
 	table_set(module->members, key, value_obj((obj_t *)native));
 }
 
-void stdlib_install(vm_t *vm) {
+void stdlib_install(vm_t *vm, table_t *globals) {
 	obj_string_t *stdlib_name;
 	obj_module_t *module;
 
-	register_global(vm, "print", native_print);
-	register_global(vm, "assert", native_assert);
+	register_global(vm, globals, "print", native_print);
+	register_global(vm, globals, "assert", native_assert);
 
-	stdlib_name = object_new_string(vm->objects, vm->strings, "stdlib", 6);
-	module = object_new_module(vm->objects, stdlib_name);
+	stdlib_name = object_new_string(vm->heap, vm->strings, "stdlib", 6);
+	module = object_new_module(vm->heap, stdlib_name);
 
 	stdlib_register_math(vm, module);
 	stdlib_register_string(vm, module);
 	stdlib_register_convert(vm, module);
+	stdlib_register_array(vm, module);
+	stdlib_register_io(vm, module);
 
-	table_set(&vm->globals, stdlib_name, value_obj((obj_t *)module));
+	table_set(globals, stdlib_name, value_obj((obj_t *)module));
 }

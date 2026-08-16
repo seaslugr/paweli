@@ -1,0 +1,59 @@
+#moduledef "fixtures/geometry"
+
+struct Rect {
+	int w;
+	int h;
+
+	// A struct function, exported implicitly along with the struct type
+	// itself (auto-export, gated by Rect's own is_exported flag).
+	// no separate export syntax exists for struct functions.
+	fn square(int side) -> Rect {
+		return Rect { w: side, h: side };
+	}
+
+	fn area(Rect self) -> int {
+		return self.w * self.h;
+	}
+}
+
+// Never exported: proves a non-exported struct stays invisible to an
+// importer even though the whole registry it lives in gets handed over.
+struct Hidden {
+	int secret;
+}
+
+fn double_it(int n) -> int {
+	return n * 2;
+}
+
+fn area(int w, int h) -> int {
+	return w * h;
+}
+
+fn area(float w, float h) -> float {
+	return w * h;
+}
+
+fn perimeter(int w, int h) -> int {
+	return double_it(w + h);
+}
+
+// Exercises the exported-struct lifetime fix directly: this signature's
+// param/return types hold a struct_def_t* into this file's own struct
+// registry, which has to outlive this file's compile for the importer
+// to type-check calls against it.
+fn rect_area(Rect r) -> int {
+	return r.w * r.h;
+}
+
+fn make_rect(int w, int h) -> Rect {
+	return Rect { w: w, h: h };
+}
+
+fn main() {
+	export area;
+	export perimeter;
+	export rect_area;
+	export make_rect;
+	export Rect;
+}
