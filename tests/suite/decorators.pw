@@ -1,0 +1,36 @@
+#moduledef "decorators"
+
+@deprecated
+fn old_way(int x) -> int {
+	return x * 2;
+}
+
+@deprecated("use new_way instead")
+fn old_with_message(int x) -> int {
+	return x + 1;
+}
+
+fn new_way(int x) -> int {
+	return x * 2;
+}
+
+// Calling a @deprecated function still compiles and runs fine.
+// it only prints a compile-time warning, doesn't fail or change
+// behavior.
+fn test_deprecated_no_message() {
+	assert(old_way(5) == 10);
+}
+
+fn test_deprecated_with_message() {
+	assert(old_with_message(5) == 6);
+}
+
+fn test_undecorated_function_unaffected() {
+	assert(new_way(5) == 10);
+}
+
+fn main() {
+	export test_deprecated_no_message;
+	export test_deprecated_with_message;
+	export test_undecorated_function_unaffected;
+}

@@ -1,0 +1,204 @@
+/// calculator.pw
+An interactive integer calculator: reads expressions from stdin,
+evaluates them with proper operator precedence, and prints the result.
+Exit with a blank line, q, or quit.
+Supported: + - * / %, parentheses, unary minus, and whitespace.
+///
+
+fn main() {
+	print("Paweli Calculator");
+	print("Operators: + - * / %   parentheses: ( )   unary minus: -5");
+	print("Enter an expression, or a blank line / q / quit to exit.");
+
+	while (true) {
+		string line = stdlib.read_line();
+
+		if (line == "") {
+			break;
+		}
+		if (line == "q" || line == "quit") {
+			break;
+		}
+		if (is_blank(line)) {
+			continue;
+		}
+
+		try {
+			int value = evaluate(line);
+			print(value);
+		} catch(string message) {
+			print(stdlib.concat("error: ", message));
+		}
+	}
+
+	print("Bye!");
+}
+
+/// Tokenize: numbers, operators, and parens become one token each; anything
+else is an error.
+///
+fn tokenize(string input) -> string[] {
+	string[] tokens = [];
+	int i = 0;
+	int len = stdlib.length(input);
+
+	while (i < len) {
+		string c = input[i];
+
+		if (c == " " || c == "\t") {
+			i = i + 1;
+		} else if (is_digit(c)) {
+			string num = c;
+			i = i + 1;
+			while (i < len && is_digit(input[i])) {
+				num = stdlib.concat(num, input[i]);
+				i = i + 1;
+			}
+			stdlib.push(tokens, num);
+		} else if (c == "+" || c == "-" || c == "*" || c == "/" || c == "%" || c == "(" || c == ")") {
+			stdlib.push(tokens, c);
+			i = i + 1;
+		} else {
+			throw stdlib.concat(stdlib.concat("unexpected character '", c), "'");
+		}
+	}
+
+	return tokens;
+}
+
+fn is_blank(string s) -> bool {
+	int i = 0;
+	int len = stdlib.length(s);
+	while (i < len) {
+		if (s[i] != " " && s[i] != "\t") {
+			return false;
+		}
+		i = i + 1;
+	}
+	return true;
+}
+
+fn is_digit(string c) -> bool {
+	return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+		|| c == "5" || c == "6" || c == "7" || c == "8" || c == "9";
+}
+
+fn is_number(string tok) -> bool {
+	int i = 0;
+	int len = stdlib.length(tok);
+	if (len == 0) {
+		return false;
+	}
+	while (i < len) {
+		if (!is_digit(tok[i])) {
+			return false;
+		}
+		i = i + 1;
+	}
+	return true;
+}
+
+/// The token list plus a read position. Passing the struct around lets every
+parser function share one cursor, mutated in place through 'advance'.
+///
+struct TokenStream {
+	string[] tokens;
+	int pos;
+
+	fn peek(TokenStream self) -> string {
+		if (self.pos >= stdlib.length(self.tokens)) {
+			return "";
+		}
+		return self.tokens[self.pos];
+	}
+
+	fn advance(TokenStream self) -> string {
+		string tok = TokenStream.peek(self);
+		self.pos = self.pos + 1;
+		return tok;
+	}
+}
+
+/// Precedence-climbing parser. -1 precedence for anything that is not an
+operator ends the current expression, so ')' or end-of-input naturally
+terminate a subexpression and the caller can report leftover input.
+///
+fn parse_expr(TokenStream t, int min_prec) -> int {
+	int lhs = parse_primary(t);
+
+	while (true) {
+		string op = TokenStream.peek(t);
+		if (prec(op) < min_prec) {
+			return lhs;
+		}
+		TokenStream.advance(t);
+		int rhs = parse_expr(t, prec(op) + 1);
+		lhs = apply_binop(op, lhs, rhs);
+	}
+}
+
+fn parse_primary(TokenStream t) -> int {
+	string tok = TokenStream.peek(t);
+
+	if (tok == "(") {
+		TokenStream.advance(t);
+		int value = parse_expr(t, 0);
+		if (TokenStream.advance(t) != ")") {
+			throw "expected ')'";
+		}
+		return value;
+	}
+	if (tok == "-") {
+		TokenStream.advance(t);
+		return -parse_primary(t);
+	}
+	if (tok == "") {
+		throw "unexpected end of expression";
+	}
+	if (!is_number(tok)) {
+		throw stdlib.concat("unexpected token: ", tok);
+	}
+	TokenStream.advance(t);
+	return stdlib.to_int(tok);
+}
+
+fn prec(string op) -> int {
+	if (op == "+" || op == "-") {
+		return 1;
+	}
+	if (op == "*" || op == "/" || op == "%") {
+		return 2;
+	}
+	return -1;
+}
+
+fn apply_binop(string op, int left, int right) -> int {
+	if (op == "+") {
+		return left + right;
+	} else if (op == "-") {
+		return left - right;
+	} else if (op == "*") {
+		return left * right;
+	} else if (op == "/") {
+		if (right == 0) {
+			throw "division by zero";
+		}
+		return left / right;
+	} else {
+		if (right == 0) {
+			throw "modulo by zero";
+		}
+		return left % right;
+	}
+}
+
+fn evaluate(string input) -> int {
+	string[] tokens = tokenize(input);
+	TokenStream t = TokenStream { tokens: tokens, pos: 0 };
+
+	int value = parse_expr(t, 0);
+	if (TokenStream.peek(t) != "") {
+		throw stdlib.concat(stdlib.concat("trailing input after '", TokenStream.peek(t)), "'");
+	}
+	return value;
+}

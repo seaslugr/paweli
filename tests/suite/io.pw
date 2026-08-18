@@ -1,0 +1,10 @@
+#moduledef "io"
+
+fn test_read_line_on_empty_stdin() {
+	string line = stdlib.read_line();
+	assert(line == "", "read_line() on closed/empty stdin should return an empty string");
+}
+
+fn main() {
+	export test_read_line_on_empty_stdin;
+}

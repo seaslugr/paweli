@@ -1,0 +1,276 @@
+#moduledef "arrays"
+
+// A struct is just another element type, so `Cell[][]` (a grid of
+// struct instances) is no different from `int[][]` to the type system.
+struct Cell {
+	int v;
+}
+
+fn sum(int[] values) -> int {
+	int total = 0;
+	for (int i = 0; i < stdlib.length(values); i = i + 1) {
+		total = total + values[i];
+	}
+	return total;
+}
+
+fn test_basic() {
+	int[] nums = [1, 2, 3];
+	assert(stdlib.length(nums) == 3);
+	assert(nums[0] == 1);
+	assert(nums[1] == 2);
+	assert(nums[2] == 3);
+
+	nums[1] = 20;
+	assert(nums[1] == 20);
+
+	assert(sum(nums) == 24);
+}
+
+fn test_push_pop() {
+	int[] empty = [];
+	assert(stdlib.length(empty) == 0);
+
+	stdlib.push(empty, 10);
+	stdlib.push(empty, 20);
+	stdlib.push(empty, 30);
+	assert(stdlib.length(empty) == 3);
+	assert(empty[2] == 30);
+
+	int last = stdlib.pop(empty);
+	assert(last == 30);
+	assert(stdlib.length(empty) == 2);
+}
+
+fn test_string_arrays() {
+	string[] names = ["alice", "bob"];
+	assert(names[0] == "alice");
+	assert(stdlib.concat(names[0], names[1]) == "alicebob");
+}
+
+// Same regression class as structs.pw's sum_with_struct_in_loop(): a
+// hot loop counter (i) is exactly what the JIT's own register
+// allocator picks for r15 (jit_compile.c's select_register_local()),
+// and emit_op_array() used to clobber it the same way emit_op_struct()
+// did, for the same reason (both borrowed r15 as scratch for the new
+// object's own pointer across the per-element construction, unaware
+// r15 might already be live for the whole function).
+fn sum_with_array_in_loop(int n) -> int {
+	int total = 0;
+	int i = 0;
+	while (i < n) {
+		int[] arr = [i, i + 1, i + 2];
+		total = total + arr[0] + arr[1] + arr[2];
+		i = i + 1;
+	}
+	return total;
+}
+
+fn test_array_in_hot_loop() {
+	assert(sum_with_array_in_loop(4) == 30, "an array built inside a loop alongside a JIT register-allocated counter must not corrupt it");
+}
+
+// The JIT's array-indexing fast paths (jit_compile.c's
+// emit_op_get_index()/emit_op_set_index()) inline the common
+// array + in-bounds-int case as a direct memory read/write instead of
+// a C-helper call. These loops are the shape that path targets (hot
+// register-allocated counters indexing a single array) and must stay
+// correct under forced JIT (PAWELI_JIT_THRESHOLD=0, so the counter
+// really is in r15 and both fast paths really are exercised), under
+// PAWELI_GC_STRESS=1 (the array stays a live GC root on the stack for
+// the whole function), and when the fast path's checks fail
+// (test_index_error_fallbacks() below).
+fn double_in_place(int[] values) -> int {
+	int total = 0;
+	for (int i = 0; i < stdlib.length(values); i = i + 1) {
+		int v = values[i];
+		values[i] = v * 2;
+		total = total + v;
+	}
+	return total;
+}
+
+fn test_jit_set_index_fast_path() {
+	int[] doubles = [1, 2, 3, 4, 5];
+	assert(double_in_place(doubles) == 15, "the JIT's OP_SET_INDEX fast path must write through to the array");
+	assert(doubles[0] == 2 && doubles[4] == 10, "the JIT's OP_SET_INDEX fast path must write the doubled values back");
+	assert(sum(doubles) == 30, "reads after fast-path writes must see the new values");
+}
+
+// String indexing deliberately misses the fast path (a string is an
+// OBJ_STRING, not OBJ_ARRAY), so every s[i] here falls through to
+// jit_helper_get_index(). The slow path whose OBJ_STRING case
+// allocates a single-char string, which is exactly where the GC
+// safepoint (emit_gc_check()) still has to fire inside JIT'd code.
+fn sum_char_lengths(string s) -> int {
+	int total = 0;
+	for (int i = 0; i < stdlib.length(s); i = i + 1) {
+		total = total + stdlib.length(s[i]);
+	}
+	return total;
+}
+
+fn test_jit_get_index_slow_path() {
+	assert(sum_char_lengths("hello") == 5, "string indexing (the JIT's OP_GET_INDEX slow path, which allocates) must stay correct");
+}
+
+// Every fast-path check failure must land on the slow path, which
+// reports the exact same errors the interpreter always has. The set
+// case is the interesting one: the fast path's checks run *before* any
+// write, so a failing OP_SET_INDEX must not have mutated the array.
+fn test_index_error_fallbacks() {
+	int[] nums = [1, 2, 3];
+
+	assert((nums[3] catch(int 0)) == 0, "an out-of-bounds read must fall back to the slow path's error, not misbehave");
+	assert((nums[1000] catch(int 0)) == 0, "a far out-of-bounds read must fall back too");
+	assert((nums[-1] catch(int 0)) == 0, "a negative-index read must fall back too");
+
+	string seen = "";
+	try {
+		nums[3] = 99;
+	} catch(string message) {
+		seen = message;
+	}
+	assert(seen == "array index 3 out of bounds for length 3", "a failing OP_SET_INDEX must report the exact slow-path error");
+	assert(nums[0] == 1 && nums[1] == 2 && nums[2] == 3, "a failing OP_SET_INDEX must not have written anything");
+}
+
+// Nested arrays: `int[][]` is an array whose elements are themselves
+// `int[]` arrays. The runtime already stored elements as opaque
+// values, so a 2D grid is just an array of array pointers. Only
+// the type system (and parser) had to learn the extra depth.
+//
+// A 2D array read `grid[r][c]` compiles to two OP_GET_INDEX opcodes in a
+// row: the outer one reads an int[] element (a VAL_OBJ array pointer),
+// the inner one reads an int out of it. Both hit the JIT's array fast
+// path, so sum_grid()'s nested loop is the 2D analogue of
+// double_in_place()'s hot loop above and must stay correct under
+// forced JIT and GC stress.
+fn sum_grid(int[][] grid) -> int {
+	int total = 0;
+	for (int r = 0; r < stdlib.length(grid); r = r + 1) {
+		for (int c = 0; c < stdlib.length(grid[r]); c = c + 1) {
+			total = total + grid[r][c];
+		}
+	}
+	return total;
+}
+
+fn test_nested_arrays() {
+	int[][] grid = [[1, 2, 3], [4, 5, 6]];
+	assert(stdlib.length(grid) == 2);
+	assert(stdlib.length(grid[0]) == 3);
+	assert(grid[0][0] == 1);
+	assert(grid[0][2] == 3);
+	assert(grid[1][2] == 6);
+
+	grid[1][1] = 99;
+	assert(grid[1][1] == 99);
+
+	int[] row = grid[0];
+	assert(row[2] == 3);
+	assert(sum(row) == 6);
+
+	assert(sum_grid(grid) == 115, "nested indexing in a hot loop must stay correct under the JIT");
+
+	int grid_total = 0;
+	for (int[] r : grid) {
+		grid_total = grid_total + sum(r);
+	}
+	assert(grid_total == 115, "foreach over a nested array binds each inner row");
+
+	stdlib.push(grid, [7, 8]);
+	assert(stdlib.length(grid) == 3);
+	assert(grid[2][1] == 8);
+
+	int[] popped_row = stdlib.pop(grid);
+	assert(popped_row[0] == 7);
+	assert(stdlib.length(grid) == 2);
+}
+
+fn test_jagged_and_empty_nested() {
+	int[][] jagged = [[1], [2, 3], [4, 5, 6]];
+	assert(stdlib.length(jagged) == 3);
+	assert(stdlib.length(jagged[2]) == 3);
+	assert(jagged[2][2] == 6);
+
+	int[][] empty2d = [];
+	assert(stdlib.length(empty2d) == 0);
+}
+
+fn test_3d_array() {
+	int[][][] cube = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+	assert(cube[0][1][1] == 4);
+	assert(cube[1][1][0] == 7);
+}
+
+// A nested array of structs: `grid[0][1].v` is member access on the
+// inner element, exercising the full chain array-index -> array-index ->
+// field. Declaring `Cell[][]` also proves the parser's var-decl
+// lookahead handles a struct type followed by more than one `[]`.
+fn test_struct_cell_grid() {
+	Cell[][] grid = [[Cell { v: 1 }, Cell { v: 2 }], [Cell { v: 3 }]];
+	assert(stdlib.length(grid) == 2);
+	assert(grid[0][1].v == 2);
+	assert(grid[1][0].v == 3);
+	grid[0][0].v = 10;
+	assert(grid[0][0].v == 10);
+}
+
+// The array half of what used to be for_each.pw: foreach over an
+// int[]/string[] array. The string-character-iteration half lives in
+// strings.pw instead.
+fn test_foreach_array() {
+	int[] nums = [10, 20, 30, 40];
+	int arr_sum = 0;
+	for (int n : nums) {
+		arr_sum = arr_sum + n;
+	}
+	assert(arr_sum == 100, "foreach over an array");
+}
+
+fn test_foreach_array_break_continue() {
+	string[] names = ["alice", "bob", "carol", "dave"];
+	string joined = "";
+	for (string name : names) {
+		if (name == "bob") {
+			continue;
+		}
+		if (name == "dave") {
+			break;
+		}
+		joined = stdlib.concat(joined, name);
+	}
+	assert(joined == "alicecarol", "foreach over an array supports break/continue");
+}
+
+fn test_foreach_nested_array() {
+	int[] outer_matches = [1, 2, 3];
+	int[] inner_matches = [1, 2, 3];
+	int pair_count = 0;
+	for (int x : outer_matches) {
+		for (int y : inner_matches) {
+			if (x == y) {
+				pair_count = pair_count + 1;
+			}
+		}
+	}
+	assert(pair_count == 3, "nested foreach loops don't interfere with each other");
+}
+
+fn main() {
+	export test_basic;
+	export test_push_pop;
+	export test_string_arrays;
+	export test_array_in_hot_loop;
+	export test_jit_set_index_fast_path;
+	export test_jit_get_index_slow_path;
+	export test_index_error_fallbacks;
+	export test_nested_arrays;
+	export test_jagged_and_empty_nested;
+	export test_3d_array;
+	export test_struct_cell_grid;
+	export test_foreach_array;
+	export test_foreach_array_break_continue;
+	export test_foreach_nested_array;
+}

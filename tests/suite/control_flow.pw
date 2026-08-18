@@ -1,0 +1,248 @@
+#moduledef "control_flow"
+
+fn classify(int n) -> string {
+	if (n < 0) {
+		return "negative";
+	} else if (n == 0) {
+		return "zero";
+	} else {
+		return "positive";
+	}
+}
+
+fn test_if_else() {
+	assert(classify(-5) == "negative");
+	assert(classify(0) == "zero");
+	assert(classify(7) == "positive");
+}
+
+fn sum_to(int n) -> int {
+	int total = 0;
+	for (int i = 1; i <= n; i = i + 1) {
+		total = total + i;
+	}
+	return total;
+}
+
+fn test_for_loop() {
+	assert(sum_to(10) == 55);
+	assert(sum_to(0) == 0);
+}
+
+fn count_while(int n) -> int {
+	int count = 0;
+	while (n > 0) {
+		count = count + 1;
+		n = n - 1;
+	}
+	return count;
+}
+
+fn test_while_loop() {
+	assert(count_while(5) == 5);
+}
+
+// A local declared fresh inside a loop's own body (as opposed to
+// sum_to()'s `i`, declared once before the loop starts): its
+// "declaration" is nothing but the initializer's pushed value landing
+// at the local's stack slot, no dedicated opcode of its own, so this
+// same bytecode (and the JIT's own translation of it) runs once
+// per iteration, not once for the whole function. Exercises that
+// distinction directly, heavily favoring `doubled` for register
+// allocation (four references vs. total/i's two and three) so it's
+// the one actually put through it.
+fn sum_doubled(int n) -> int {
+	int total = 0;
+	int i = 0;
+	while (i < n) {
+		int doubled = i;
+		doubled = doubled + doubled;
+		doubled = doubled + 1;
+		total = total + doubled;
+		i = i + 1;
+	}
+	return total;
+}
+
+fn test_for_loop_local_per_iteration() {
+	assert(sum_doubled(6) == 36);
+}
+
+// A regression test for JIT register-allocation phase R2a: three hot
+// numeric locals (a, b, c) in one loop compete with the loop counter
+// (i) for the JIT's up-to-3 register-allocated slots (r15/r10/r11;
+// see jit_compile.c's select_register_locals()), and c is fed through
+// a real function call every iteration. r10/r11 are caller-saved, so
+// bump_by_one()'s call clobbers whichever of them is bound unless
+// emit_call() correctly spills it before the call and reloads it
+// after. If that spill/reload were missing or wrong, c (and whatever
+// else shares a register with it across iterations) would come out
+// corrupted, not just slow.
+fn bump_by_one(int x) -> int {
+	return x + 1;
+}
+
+fn three_counters(int n) -> int {
+	int a = 0;
+	int b = 0;
+	int c = 0;
+	int i = 0;
+	while (i < n) {
+		a = a + 1;
+		b = b + 2;
+		c = bump_by_one(c);
+		i = i + 1;
+	}
+	return a + b + c;
+}
+
+fn test_jit_register_spill_reload() {
+	assert(three_counters(1000) == 1000 + 2000 + 1000, "r10/r11 spill/reload around a call inside the hot loop must not corrupt the register-allocated counters");
+}
+
+fn test_for_infinite_loop_early_return() {
+	int i = 0;
+	int total = 0;
+	for (;;) {
+		i = i + 1;
+		if (i > 5) {
+			assert(total == 15, "for(;;) with an early return should still accumulate correctly");
+			return;
+		}
+		total = total + i;
+	}
+}
+
+fn test_while_break_continue() {
+	int i = 0;
+	int sum = 0;
+	while (i < 10) {
+		i = i + 1;
+		if (i == 3) {
+			continue;
+		}
+		if (i == 7) {
+			break;
+		}
+		sum = sum + i;
+	}
+	assert(sum == 1 + 2 + 4 + 5 + 6, "while: continue skips 3, break stops before 7");
+	assert(i == 7, "while stopped exactly at 7");
+}
+
+fn test_for_break_continue() {
+	int total = 0;
+	for (int j = 0; j < 10; j = j + 1) {
+		int doubled = j * 2;
+		if (doubled == 6) {
+			continue;
+		}
+		if (j == 8) {
+			break;
+		}
+		total = total + doubled;
+	}
+	assert(total == 0 + 2 + 4 + 8 + 10 + 12 + 14, "for: continue skips j==3, break stops before j==8, local declared each iteration pops correctly");
+}
+
+fn test_nested_loop_break() {
+	int outer_count = 0;
+	int inner_total = 0;
+	for (int a = 0; a < 3; a = a + 1) {
+		outer_count = outer_count + 1;
+		for (int b = 0; b < 10; b = b + 1) {
+			if (b == 2) {
+				break;
+			}
+			inner_total = inner_total + 1;
+		}
+	}
+	assert(outer_count == 3, "break only exits the inner loop");
+	assert(inner_total == 6, "inner loop broke after 2 iterations, 3 times");
+}
+
+fn test_continue_pops_nested_block() {
+	int c = 0;
+	for (int k = 0; k < 5; k = k + 1) {
+		{
+			int nested = k + 100;
+			if (k == 2) {
+				continue;
+			}
+		}
+		c = c + 1;
+	}
+	assert(c == 4, "continue from inside a nested block still pops that block's own local");
+}
+
+fn test_for_infinite_loop_break() {
+	int n = 0;
+	for (;;) {
+		n = n + 1;
+		if (n >= 5) {
+			break;
+		}
+	}
+	assert(n == 5, "break works in a for(;;) with no condition to patch a jump onto");
+}
+
+// The range-for half of what used to be for_each.pw (a control-flow
+// construct, not array- or string-specific, unlike the rest of that
+// file: see arrays.pw/strings.pw for those halves).
+fn test_range_for() {
+	int sum = 0;
+	for (int i : 0..10) {
+		sum = sum + i;
+	}
+	assert(sum == 45, "range 0..10 sums 0 through 9");
+}
+
+fn test_range_for_break_continue() {
+	int total = 0;
+	for (int i : 0..10) {
+		if (i == 3) {
+			continue;
+		}
+		if (i == 7) {
+			break;
+		}
+		total = total + i;
+	}
+	assert(total == 1 + 2 + 4 + 5 + 6, "range form supports break/continue");
+}
+
+fn test_range_for_empty() {
+	int never = 0;
+	for (int i : 5..5) {
+		never = never + 1;
+	}
+	assert(never == 0, "an empty range does nothing");
+}
+
+fn test_range_for_nested() {
+	int product_sum = 0;
+	for (int a : 0..3) {
+		for (int b : 0..3) {
+			product_sum = product_sum + a * b;
+		}
+	}
+	assert(product_sum == 9, "nested range loops don't interfere with each other");
+}
+
+fn main() {
+	export test_if_else;
+	export test_for_loop;
+	export test_while_loop;
+	export test_for_loop_local_per_iteration;
+	export test_jit_register_spill_reload;
+	export test_for_infinite_loop_early_return;
+	export test_while_break_continue;
+	export test_for_break_continue;
+	export test_nested_loop_break;
+	export test_continue_pops_nested_block;
+	export test_for_infinite_loop_break;
+	export test_range_for;
+	export test_range_for_break_continue;
+	export test_range_for_empty;
+	export test_range_for_nested;
+}

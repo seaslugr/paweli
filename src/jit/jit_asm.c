@@ -13,14 +13,14 @@ static void emit_group3(jit_asm_t *a, uint8_t digit, jit_reg_t reg);
 static void emit_shift_cl(jit_asm_t *a, uint8_t digit, jit_reg_t dst);
 static void emit_sse_reg_reg(jit_asm_t *a, uint8_t mandatory_prefix, uint8_t opcode, jit_xmm_reg_t dst, jit_xmm_reg_t src);
 
-// -fanalyzer flags the realloc() below as a theoretical leak-on-NULL
-// (CWE-401): same unchecked-realloc-and-reassign idiom chunk_t's own
-// chunk_write() (src/compiler/chunk.c) already uses for its growable
-// buffer, which the analyzer doesn't happen to flag. This project
-// doesn't check allocation failure anywhere (an out-of-memory abort
-// isn't a scenario worth guarding against for a hobby VM). This is
-// the same accepted pattern the analyzer's path exploration reaches
-// here and not there.
+/* -fanalyzer flags the realloc() below as a theoretical leak-on-NULL
+   (CWE-401): same unchecked-realloc-and-reassign idiom chunk_t's own
+   chunk_write() (src/compiler/chunk.c) already uses for its growable
+   buffer, which the analyzer doesn't happen to flag. This project
+   doesn't check allocation failure anywhere (an out-of-memory abort
+   isn't a scenario worth guarding against for a hobby VM). This is
+   the same accepted pattern the analyzer's path exploration reaches
+   here and not there. */
 static void emit8(jit_asm_t *a, uint8_t byte) {
 	if (a->count == a->capacity) {
 		a->capacity = a->capacity < 64 ? 64 : a->capacity * 2;

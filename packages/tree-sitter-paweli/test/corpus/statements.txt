@@ -1,0 +1,192 @@
+==================
+If and else
+==================
+
+fn classify(int n) {
+	if (n > 0) {
+		return 1;
+	} else if (n < 0) {
+		return -1;
+	} else {
+		return 0;
+	}
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)))
+    (block
+      (if_statement
+        (binary_expression
+          (identifier)
+          (int_literal))
+        (block
+          (return_statement
+            (int_literal)))
+        (if_statement
+          (binary_expression
+            (identifier)
+            (int_literal))
+          (block
+            (return_statement
+              (unary_expression
+                (int_literal))))
+          (block
+            (return_statement
+              (int_literal))))))))
+
+==================
+While loop
+==================
+
+fn count_down(int n) {
+	while (n > 0) {
+		n = n - 1;
+	}
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)))
+    (block
+      (while_statement
+        (binary_expression
+          (identifier)
+          (int_literal))
+        (block
+          (expression_statement
+            (assignment_expression
+              (identifier)
+              (binary_expression
+                (identifier)
+                (int_literal)))))))))
+
+==================
+Classic three-clause for loop
+==================
+
+fn sum_to(int n) {
+	int total = 0;
+	for (int i = 0; i < n; i = i + 1) {
+		total = total + i;
+	}
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)))
+    (block
+      (variable_declaration
+        (identifier)
+        (int_literal))
+      (for_statement
+        (for_classic_clause
+          (variable_declaration
+            (identifier)
+            (int_literal))
+          (binary_expression
+            (identifier)
+            (identifier))
+          (assignment_expression
+            (identifier)
+            (binary_expression
+              (identifier)
+              (int_literal))))
+        (block
+          (expression_statement
+            (assignment_expression
+              (identifier)
+              (binary_expression
+                (identifier)
+                (identifier)))))))))
+
+==================
+Range-based for loop
+==================
+
+fn print_range() {
+	for (int i : 0..10) {
+		break;
+	}
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (for_statement
+        (for_range_clause
+          (identifier)
+          (int_literal)
+          (int_literal))
+        (block
+          (break_statement))))))
+
+==================
+Each-based for loop over an array
+==================
+
+fn print_all(int[] values) {
+	for (int v : values) {
+		continue;
+	}
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)))
+    (block
+      (for_statement
+        (for_each_clause
+          (identifier)
+          (identifier))
+        (block
+          (continue_statement))))))
+
+==================
+Break and continue inside nested block
+==================
+
+fn loop_body() {
+	while (true) {
+		{
+			break;
+		}
+	}
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (while_statement
+        (boolean_literal)
+        (block
+          (block
+            (break_statement)))))))

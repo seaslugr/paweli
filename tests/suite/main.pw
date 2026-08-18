@@ -1,0 +1,136 @@
+#module "arithmetic"
+#module "arrays"
+#module "strings"
+#module "control_flow"
+#module "functions"
+#module "closures"
+#module "structs"
+#module "decorators"
+#module "error_handling"
+#module "globals"
+#module "stdlib_tests"
+#module "io"
+#module "modules"
+#module "basic"
+
+@test fn test_arithmetic_basic_ops() { arithmetic.test_basic_ops(); }
+@test fn test_arithmetic_float_ops() { arithmetic.test_float_ops(); }
+@test fn test_arithmetic_float_fast_path() { arithmetic.test_float_fast_path(); }
+@test fn test_arithmetic_float_nan_inf() { arithmetic.test_float_nan_inf(); }
+@test fn test_arithmetic_comparisons() { arithmetic.test_comparisons(); }
+@test fn test_arithmetic_logical_ops() { arithmetic.test_logical_ops(); }
+@test fn test_arithmetic_bitwise_ops() { arithmetic.test_bitwise_ops(); }
+@test fn test_arithmetic_bitwise_precedence() { arithmetic.test_bitwise_precedence(); }
+@test fn test_arithmetic_compound_assign_local() { arithmetic.test_compound_assign_local(); }
+@test fn test_arithmetic_compound_assign_expression() { arithmetic.test_compound_assign_expression(); }
+@test fn test_arithmetic_compound_assign_array() { arithmetic.test_compound_assign_array(); }
+@test fn test_arithmetic_compound_assign_struct_field() { arithmetic.test_compound_assign_struct_field(); }
+@test fn test_arithmetic_compound_assign_single_evaluation() { arithmetic.test_compound_assign_single_evaluation(); }
+
+@test fn test_arrays_basic() { arrays.test_basic(); }
+@test fn test_arrays_push_pop() { arrays.test_push_pop(); }
+@test fn test_arrays_string_arrays() { arrays.test_string_arrays(); }
+@test fn test_arrays_array_in_hot_loop() { arrays.test_array_in_hot_loop(); }
+@test fn test_arrays_jit_set_index_fast_path() { arrays.test_jit_set_index_fast_path(); }
+@test fn test_arrays_jit_get_index_slow_path() { arrays.test_jit_get_index_slow_path(); }
+@test fn test_arrays_index_error_fallbacks() { arrays.test_index_error_fallbacks(); }
+@test fn test_arrays_nested_arrays() { arrays.test_nested_arrays(); }
+@test fn test_arrays_jagged_and_empty_nested() { arrays.test_jagged_and_empty_nested(); }
+@test fn test_arrays_3d_array() { arrays.test_3d_array(); }
+@test fn test_arrays_struct_cell_grid() { arrays.test_struct_cell_grid(); }
+@test fn test_arrays_foreach_array() { arrays.test_foreach_array(); }
+@test fn test_arrays_foreach_array_break_continue() { arrays.test_foreach_array_break_continue(); }
+@test fn test_arrays_foreach_nested_array() { arrays.test_foreach_nested_array(); }
+
+@test fn test_strings_split() { strings.test_split(); }
+@test fn test_strings_indexing() { strings.test_indexing(); }
+@test fn test_strings_foreach_characters() { strings.test_foreach_characters(); }
+
+@test fn test_control_flow_if_else() { control_flow.test_if_else(); }
+@test fn test_control_flow_for_loop() { control_flow.test_for_loop(); }
+@test fn test_control_flow_while_loop() { control_flow.test_while_loop(); }
+@test fn test_control_flow_for_loop_local_per_iteration() { control_flow.test_for_loop_local_per_iteration(); }
+@test fn test_control_flow_jit_register_spill_reload() { control_flow.test_jit_register_spill_reload(); }
+@test fn test_control_flow_for_infinite_loop_early_return() { control_flow.test_for_infinite_loop_early_return(); }
+@test fn test_control_flow_while_break_continue() { control_flow.test_while_break_continue(); }
+@test fn test_control_flow_for_break_continue() { control_flow.test_for_break_continue(); }
+@test fn test_control_flow_nested_loop_break() { control_flow.test_nested_loop_break(); }
+@test fn test_control_flow_continue_pops_nested_block() { control_flow.test_continue_pops_nested_block(); }
+@test fn test_control_flow_for_infinite_loop_break() { control_flow.test_for_infinite_loop_break(); }
+@test fn test_control_flow_range_for() { control_flow.test_range_for(); }
+@test fn test_control_flow_range_for_break_continue() { control_flow.test_range_for_break_continue(); }
+@test fn test_control_flow_range_for_empty() { control_flow.test_range_for_empty(); }
+@test fn test_control_flow_range_for_nested() { control_flow.test_range_for_nested(); }
+
+@test fn test_functions_basic_calls() { functions.test_basic_calls(); }
+@test fn test_functions_call_site_caching_branching_recursion() { functions.test_call_site_caching_branching_recursion(); }
+@test fn test_functions_call_site_caching_separate_calls() { functions.test_call_site_caching_separate_calls(); }
+@test fn test_functions_implicit_null_return() { functions.test_implicit_null_return(); }
+@test fn test_functions_early_return() { functions.test_early_return(); }
+@test fn test_functions_shadowing() { functions.test_shadowing(); }
+@test fn test_functions_jit_inline_cache_no_cross_contamination() { functions.test_jit_inline_cache_no_cross_contamination(); }
+@test fn test_functions_overloading_by_type() { functions.test_overloading_by_type(); }
+@test fn test_functions_overloading_by_arity() { functions.test_overloading_by_arity(); }
+@test fn test_functions_function_value_variable() { functions.test_function_value_variable(); }
+@test fn test_functions_function_value_callback() { functions.test_function_value_callback(); }
+@test fn test_functions_function_value_closure_factory() { functions.test_function_value_closure_factory(); }
+@test fn test_functions_function_value_lambda_literal() { functions.test_function_value_lambda_literal(); }
+@test fn test_functions_function_value_struct_field() { functions.test_function_value_struct_field(); }
+@test fn test_functions_stdlib_sort_with_comparator() { functions.test_stdlib_sort_with_comparator(); }
+
+@test fn test_closures_counter_closure() { closures.test_counter_closure(); }
+@test fn test_closures_shared_upvalue() { closures.test_shared_upvalue(); }
+@test fn test_closures_capture_parameter() { closures.test_capture_parameter(); }
+@test fn test_closures_recursive_nested_closure() { closures.test_recursive_nested_closure(); }
+
+@test fn test_structs_field_read_write() { structs.test_field_read_write(); }
+@test fn test_structs_pass_return_functions() { structs.test_pass_return_functions(); }
+@test fn test_structs_nested_struct_fields() { structs.test_nested_struct_fields(); }
+@test fn test_structs_default_field_values() { structs.test_default_field_values(); }
+@test fn test_structs_struct_equality_identity() { structs.test_struct_equality_identity(); }
+@test fn test_structs_self_referencing_struct() { structs.test_self_referencing_struct(); }
+@test fn test_structs_bare_literal_inference() { structs.test_bare_literal_inference(); }
+@test fn test_structs_struct_functions() { structs.test_struct_functions(); }
+@test fn test_structs_struct_in_loop_jit() { structs.test_struct_in_loop_jit(); }
+@test fn test_structs_register_cached_null_locals() { structs.test_register_cached_null_locals(); }
+@test fn test_structs_struct_survives_across_allocating_call() { structs.test_struct_survives_across_allocating_call(); }
+
+@test fn test_decorators_deprecated_no_message() { decorators.test_deprecated_no_message(); }
+@test fn test_decorators_deprecated_with_message() { decorators.test_deprecated_with_message(); }
+@test fn test_decorators_undecorated_function_unaffected() { decorators.test_undecorated_function_unaffected(); }
+
+@test fn test_error_handling_postfix_catch() { error_handling.test_postfix_catch(); }
+@test fn test_error_handling_block_form_as_statement() { error_handling.test_block_form_as_statement(); }
+@test fn test_error_handling_block_form_as_expression() { error_handling.test_block_form_as_expression(); }
+@test fn test_error_handling_nested_try_catch() { error_handling.test_nested_try_catch(); }
+@test fn test_error_handling_raise_and_catch_custom_error() { error_handling.test_raise_and_catch_custom_error(); }
+@test fn test_error_handling_deeply_nested_failure_after_mutation() { error_handling.test_deeply_nested_failure_after_mutation(); }
+@test fn test_error_handling_call_stack_overflow_reported_correctly() { error_handling.test_call_stack_overflow_reported_correctly(); }
+
+@test fn test_globals_initial_value_and_direct_mutation() { globals.test_initial_value_and_direct_mutation(); }
+@test fn test_globals_compound_assignment() { globals.test_compound_assignment(); }
+@test fn test_globals_cross_function_sharing() { globals.test_cross_function_sharing(); }
+@test fn test_globals_initializer_forward_and_global_reference() { globals.test_initializer_forward_and_global_reference(); }
+@test fn test_globals_local_shadows_global() { globals.test_local_shadows_global(); }
+@test fn test_globals_global_array_reference_semantics() { globals.test_global_array_reference_semantics(); }
+@test fn test_globals_string_global_reassignment() { globals.test_string_global_reassignment(); }
+
+@test fn test_stdlib_abs() { stdlib_tests.test_abs(); }
+@test fn test_stdlib_min_max() { stdlib_tests.test_min_max(); }
+@test fn test_stdlib_sqrt() { stdlib_tests.test_sqrt(); }
+@test fn test_stdlib_string_length_case_concat() { stdlib_tests.test_string_length_case_concat(); }
+@test fn test_stdlib_to_string() { stdlib_tests.test_to_string(); }
+@test fn test_stdlib_to_int() { stdlib_tests.test_to_int(); }
+
+@test fn test_io_read_line_on_empty_stdin() { io.test_read_line_on_empty_stdin(); }
+
+@test fn test_modules_basic_module_functions() { modules.test_basic_module_functions(); }
+@test fn test_modules_exported_struct_across_boundary() { modules.test_exported_struct_across_boundary(); }
+@test fn test_modules_exported_struct_functions_unqualified() { modules.test_exported_struct_functions_unqualified(); }
+@test fn test_modules_transitive_module_chain() { modules.test_transitive_module_chain(); }
+@test fn test_modules_diamond_module_dedup() { modules.test_diamond_module_dedup(); }
+
+@test fn test_basic_print() { basic.test_print(); }
+
+fn main() {
+}

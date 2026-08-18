@@ -6,9 +6,8 @@
 /* Copies length bytes from code into a fresh page-rounded mapping and
    makes it executable (RW while writing, then RX; never RWX at any
    point a stray jump could land on it). The mapping is never freed:
-   paweli functions are never recompiled or invalidated once JIT'd (see
-   docs/design.md's JIT decision log entry), so there is no code cache
-   to evict. Returns NULL on failure.
+   paweli functions are never recompiled or invalidated once JIT'd, so
+   there is no code cache to evict. Returns NULL on failure.
 
    debug_name is used only when the PAWELI_PERF_MAP environment
    variable is set, in which case an entry is appended to

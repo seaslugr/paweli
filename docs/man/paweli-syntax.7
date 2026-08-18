@@ -1,0 +1,307 @@
+.TH PAWELI-SYNTAX 7 "August 2026" "paweli" "Miscellaneous Information"
+.SH NAME
+paweli-syntax \- paweli language syntax reference
+.SH DESCRIPTION
+The lexical building blocks of the paweli language: comments, literals,
+identifiers, keywords, and operators. See
+.BR paweli (1)
+for running and building programs, and
+.BR paweli-language (7)
+for the rest of the language.
+.SH COMMENTS
+.nf
+// a single-line comment, runs to the end of the line
+
+/// a multi-line comment
+    opens and closes with three slashes,
+    everything between is ignored
+///
+.fi
+.PP
+There is no
+.B /* */
+form. Line comments use
+.BR // ,
+block comments open and close with
+.BR /// .
+.SH IDENTIFIERS
+An identifier starts with a letter or underscore, then continues with
+letters, digits, or underscores:
+.BR total ,
+.BR _count ,
+.BR player2 .
+Identifiers are case-sensitive.
+.SH KEYWORDS
+These words are reserved and cannot be used as identifiers:
+.TP
+.B fn
+declares a function
+.TP
+.B int
+integer type
+.TP
+.B float
+floating-point type
+.TP
+.B string
+string type
+.TP
+.B bool
+boolean type
+.TP
+.B if / else
+conditional branching
+.TP
+.B while
+condition-checked loop
+.TP
+.B for
+C-style counted loop
+.TP
+.B break
+exits the innermost loop immediately
+.TP
+.B continue
+skips to the next iteration of the innermost loop
+.TP
+.B return
+returns from a function
+.TP
+.B true / false
+boolean literals
+.TP
+.B null
+the null value
+.TP
+.B export
+marks a function as part of a module's public interface
+.TP
+.B struct
+declares a struct type
+.SH LITERALS
+.TP
+.B Integer
+.BR 0 ,
+.BR 42 ,
+.BR 1000 .
+Decimal only; no
+.BR 0x ,
+.BR 0o ,
+or
+.B 0b
+forms.
+.TP
+.B Float
+.BR 0.0 ,
+.BR 16.5 .
+Must have digits on both sides of the
+.B . .
+.TP
+.B String
+.BR "hello" ,
+.BR "line1\\enline2" .
+Double-quoted; see escapes below.
+.TP
+.B Boolean
+.BR true ,
+.BR false .
+.TP
+.B Null
+.BR null .
+.PP
+There is no negative-number literal syntax.
+.B -7
+is the unary
+.B -
+operator applied to
+.BR 7 .
+.PP
+String escapes are
+.BR "\\en" ,
+.BR "\\et" ,
+.BR "\\er" ,
+.BR "\\e\\e" ,
+.BR "\\e"" ,
+and
+.BR "\\e0"
+(newline, tab, carriage return, backslash, double quote, null). Any other
+character after a backslash is a compile error.
+.SH OPERATORS
+.TP
+.B Arithmetic
+.BR + ,
+.BR - ,
+.BR * ,
+.BR / ,
+.B %
+.TP
+.B Bitwise
+.BR & ,
+.BR | ,
+.BR ^ ,
+.BR ~ ,
+.BR << ,
+.BR >>
+.TP
+.B Comparison
+.BR == ,
+.BR != ,
+.BR < ,
+.BR <= ,
+.BR > ,
+.BR >=
+.TP
+.B Logical
+.BR && ,
+.BR || ,
+.BR !
+.TP
+.B Assignment
+.BR = ,
+.BR += ,
+.BR -= ,
+.BR *= ,
+.BR /= ,
+.BR %= ,
+.BR &= ,
+.BR |= ,
+.BR ^= ,
+.BR <<= ,
+.BR >>=
+.TP
+.B Member access
+.B .
+.TP
+.B Indexing
+.BR [ ] .
+.TP
+.B Function return type
+.BR -> .
+.PP
+Precedence, lowest to highest: assignment,
+.BR || ,
+.BR && ,
+.BR | ,
+.BR ^ ,
+.BR & ,
+equality
+.RB ( == ,
+.BR != ),
+comparison
+.RB ( < ,
+.BR <= ,
+.BR > ,
+.BR >= ),
+shift
+.RB ( << ,
+.BR >> ),
+addition
+.RB ( + ,
+.BR - ),
+multiplication
+.RB ( * ,
+.BR / ,
+.BR % ),
+unary
+.RB ( ! ,
+.BR - ,
+.BR ~ ),
+then call, member, and index access
+.RB ( () ,
+.BR . ,
+.BR [ ] ).
+.PP
+.B &&
+and
+.B ||
+short-circuit: the right-hand side is not evaluated if the left side
+already determines the result.
+.PP
+Bitwise
+.BR & ,
+.BR | ,
+.BR ^ ,
+.BR ~ ,
+.BR << ,
+and
+.B >>
+operate on the two's-complement bits of an
+.B int
+(never
+.BR float ),
+and sit at their own precedence tier between the logical operators and
+equality, following C's placement:
+.B "a & b == c"
+parses as
+.BR "a & (b == c)" ,
+not
+.BR "(a & b) == c" .
+Parenthesize explicitly if that is not what is meant. A shift amount
+outside 0..63 is a runtime error rather than the undefined behavior a
+raw C shift would produce for the same input; a right shift of a
+negative left-hand operand is arithmetic (sign-preserving).
+.PP
+A compound assignment,
+.BR "target op= value" ,
+is exactly equivalent to
+.BR "target = target op value"
+semantically, but not by literally expanding to that: for an index or
+member target
+.RB ( "arr[i] += 1" ,
+.BR "s.f += 1" ),
+the object and index/field sub-expressions are evaluated only once.
+.BR "arr[f()] += 1"
+calls
+.B f()
+exactly once. Like plain
+.BR = ,
+a compound assignment is itself an expression, producing the value that
+was stored
+.RB ( "y = (x += 1)"
+sets
+.I y
+to
+.I x
+'s new value). The right-hand side's type follows the same rules the
+matching binary operator would
+.RB ( +=
+etc. promote int/float the way
+.B +
+does;
+.B &=
+etc. require both sides
+.B int
+the way
+.B &
+does), and the computed result has to still fit the target's own declared
+type, the same check plain assignment makes.
+.SH PUNCTUATION
+.BR () ,
+.BR {} ,
+.BR , ,
+and
+.B ;
+are grouping, blocks, argument/parameter separators, and statement
+terminators.
+.PP
+.B [ ]
+is array literals
+.RB ( "[1, 2, 3]" )
+and indexing
+.RB ( "arr[i]" ).
+.PP
+.B :
+and
+.B ..
+appear in only one place, the two shorter
+.B for
+forms:
+.B "for (T name: a..b)"
+(a range) and
+.B "for (T name: expr)"
+(an array or string). Neither is a general-purpose operator;
+.B ..
+in particular has no meaning outside that one syntactic position.
+.SH "SEE ALSO"
+.BR paweli (1),
+.BR paweli-language (7)

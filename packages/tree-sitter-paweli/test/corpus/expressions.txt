@@ -1,0 +1,293 @@
+==================
+Arithmetic precedence
+==================
+
+fn calc() {
+	int x = 1 + 2 * 3 - 4 / 2;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (binary_expression
+            (int_literal)
+            (binary_expression
+              (int_literal)
+              (int_literal)))
+          (binary_expression
+            (int_literal)
+            (int_literal)))))))
+
+==================
+Logical and comparison operators
+==================
+
+fn check() {
+	bool ok = 1 < 2 && 3 >= 3 || !(4 == 5);
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (binary_expression
+            (binary_expression
+              (int_literal)
+              (int_literal))
+            (binary_expression
+              (int_literal)
+              (int_literal)))
+          (unary_expression
+            (parenthesized_expression
+              (binary_expression
+                (int_literal)
+                (int_literal)))))))))
+
+==================
+Unary minus and not
+==================
+
+fn negate(int n) {
+	int m = -n;
+	bool b = !true;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)))
+    (block
+      (variable_declaration
+        (identifier)
+        (unary_expression
+          (identifier)))
+      (variable_declaration
+        (identifier)
+        (unary_expression
+          (boolean_literal))))))
+
+==================
+Assignment expression
+==================
+
+fn set(int n) {
+	n = n + 1;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)))
+    (block
+      (expression_statement
+        (assignment_expression
+          (identifier)
+          (binary_expression
+            (identifier)
+            (int_literal)))))))
+
+==================
+Call expression
+==================
+
+fn run() {
+	add(1, 2);
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (expression_statement
+        (call_expression
+          (identifier)
+          (argument_list
+            (int_literal)
+            (int_literal)))))))
+
+==================
+Member expression and method-style call
+==================
+
+fn use_module() {
+	stdlib.print("hi");
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (expression_statement
+        (call_expression
+          (member_expression
+            (identifier)
+            (identifier))
+          (argument_list
+            (string_literal)))))))
+
+==================
+Index expression
+==================
+
+fn first(int[] items) {
+	int head = items[0];
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)))
+    (block
+      (variable_declaration
+        (identifier)
+        (index_expression
+          (identifier)
+          (int_literal))))))
+
+==================
+Array literal
+==================
+
+fn make() {
+	int[] xs = [1, 2, 3];
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (variable_declaration
+        (identifier)
+        (array_literal
+          (int_literal)
+          (int_literal)
+          (int_literal))))))
+
+==================
+Struct literal with and without a type name
+==================
+
+fn make_point() {
+	Point p = Point { x: 1, y: 2 };
+	Point q = { x: 3, y: 4 };
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (variable_declaration
+        (identifier)
+        (identifier)
+        (struct_literal
+          (identifier)
+          (struct_field_init
+            (identifier)
+            (int_literal))
+          (struct_field_init
+            (identifier)
+            (int_literal))))
+      (variable_declaration
+        (identifier)
+        (identifier)
+        (struct_literal
+          (struct_field_init
+            (identifier)
+            (int_literal))
+          (struct_field_init
+            (identifier)
+            (int_literal)))))))
+
+==================
+Parenthesized expression
+==================
+
+fn group() {
+	int x = (1 + 2) * 3;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (parenthesized_expression
+            (binary_expression
+              (int_literal)
+              (int_literal)))
+          (int_literal))))))
+
+==================
+Assignment to an index and a member expression
+==================
+
+fn mutate(int[] items) {
+	items[0] = 1;
+	items[0].value = 2;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)))
+    (block
+      (expression_statement
+        (assignment_expression
+          (index_expression
+            (identifier)
+            (int_literal))
+          (int_literal)))
+      (expression_statement
+        (assignment_expression
+          (member_expression
+            (index_expression
+              (identifier)
+              (int_literal))
+            (identifier))
+          (int_literal))))))

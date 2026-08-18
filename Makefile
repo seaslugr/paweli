@@ -1,6 +1,16 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: all build run debug relasserts reldebug release clean count test speedtest
+# Installation destinations. Override PREFIX (and DESTDIR) for distro
+# packaging; MANDIR defaults under PREFIX.
+PREFIX ?= /usr/local
+MANDIR ?= $(PREFIX)/share/man
+
+# Which built binary `install` copies (default: the Debug build that
+# `make` produces).
+PAWELI ?= build/debug/paweli
+MANPAGES := docs/man/paweli.1 docs/man/paweli-syntax.7
+
+.PHONY: all build run debug relasserts reldebug release clean count test speedtest man install
 
 # Default: local debug build, outputs to build/debug/.
 all: build
@@ -42,3 +52,25 @@ test: build
 # (optimized, no sanitizers) to give paweli a fair shot against C.
 speedtest: release
 	./scripts/speedtest.sh
+
+# Renders every docs/man page with groff and parses them for errors; -z
+# silences normal output so a non-zero exit is purely a syntax problem.
+# Requires groff (only for development; the manpages ship pre-rendered).
+man:
+	mkdir -p build/man
+	for page in $(MANPAGES); do \
+		groff -man -Tutf8 -z $$page || { echo "man: $$page failed"; exit 1; }; \
+	done
+	for page in $(MANPAGES); do \
+		groff -man -Tutf8 -c $$page > build/man/$$(basename $$page).txt; \
+	done
+
+install: build
+	install -Dm755 $(PAWELI) $(DESTDIR)$(PREFIX)/bin/paweli
+	install -Dm644 docs/man/paweli.1 $(DESTDIR)$(MANDIR)/man1/paweli.1
+	install -Dm644 docs/man/paweli-syntax.7 $(DESTDIR)$(MANDIR)/man7/paweli-syntax.7
+
+install-release: release
+	install -Dm755 build/release/paweli $(DESTDIR)$(PREFIX)/bin/paweli
+	install -Dm644 docs/man/paweli.1 $(DESTDIR)$(MANDIR)/man1/paweli.1
+	install -Dm644 docs/man/paweli-syntax.7 $(DESTDIR)$(MANDIR)/man7/paweli-syntax.7

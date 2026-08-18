@@ -11,10 +11,10 @@ static void free_type_ref(type_ref_t *type);
 static void print_indent(FILE *out, int depth);
 static void dump_node(const ast_node_t *node, FILE *out, int depth);
 
-// Appends text (length characters, or the whole NUL-terminated string if
-// length is negative) at offset, clamped to never write past
-// buffer_size. Returns the new offset. Debug-output-only, so silent
-// truncation on a pathologically long type is an acceptable outcome.
+/* Appends text (length characters, or the whole NUL-terminated string if
+   length is negative) at offset, clamped to never write past
+   buffer_size. Returns the new offset. Debug-output-only, so silent
+   truncation on a pathologically long type is an acceptable outcome. */
 static size_t type_ref_append(char *buffer, size_t buffer_size, size_t offset, const char *text, int length) {
 	int written;
 
@@ -29,10 +29,10 @@ static size_t type_ref_append(char *buffer, size_t buffer_size, size_t offset, c
 	return offset > buffer_size ? buffer_size : offset;
 }
 
-// Recursive (a function type_ref's own param/return types can themselves
-// be function types), so building the text has to be careful never to
-// go through type_ref_name()'s single reused buffer mid-construction.
-// everything here writes into the caller's buffer at a running offset.
+/* Recursive (a function type_ref's own param/return types can themselves
+   be function types), so building the text has to be careful never to
+   go through type_ref_name()'s single reused buffer mid-construction.
+   everything here writes into the caller's buffer at a running offset. */
 static size_t append_type_ref(char *buffer, size_t buffer_size, size_t offset, type_ref_t type) {
 	size_t i;
 
@@ -62,9 +62,9 @@ static size_t append_type_ref(char *buffer, size_t buffer_size, size_t offset, t
 	return offset;
 }
 
-// Reused static buffer: fine for this project's single-threaded,
-// sequential dump usage, but not reentrant. Do not call this twice and
-// hold onto both results at once.
+/* Reused static buffer: fine for this project's single-threaded,
+   sequential dump usage, but not reentrant. Do not call this twice and
+   hold onto both results at once. */
 static const char *type_ref_name(type_ref_t type) {
 	static char buffer[128];
 
@@ -72,9 +72,9 @@ static const char *type_ref_name(type_ref_t type) {
 	return buffer;
 }
 
-// Frees function_ref (and, recursively, every function_ref nested in its
-// own param/return types), the one heap-owned piece a type_ref_t can
-// carry. A no-op for every other base_type, where function_ref is NULL.
+/* Frees function_ref (and, recursively, every function_ref nested in its
+   own param/return types), the one heap-owned piece a type_ref_t can
+   carry. A no-op for every other base_type, where function_ref is NULL. */
 static void free_type_ref(type_ref_t *type) {
 	size_t i;
 
@@ -132,10 +132,11 @@ void ast_list_free(ast_list_t *list) {
 	list->capacity = 0;
 }
 
-ast_node_t *ast_new_program(ast_node_t *directive) {
+ast_node_t *ast_new_program(void) {
 	ast_node_t *node = ast_alloc(AST_PROGRAM, 1, 1);
 
-	node->as.program.directive = directive;
+	node->as.program.module_def = NULL;
+	ast_list_init(&node->as.program.imports);
 	ast_list_init(&node->as.program.functions);
 	ast_list_init(&node->as.program.structs);
 	ast_list_init(&node->as.program.globals);
@@ -389,7 +390,8 @@ void ast_free(ast_node_t *node) {
 
 	switch (node->kind) {
 		case AST_PROGRAM:
-			ast_free(node->as.program.directive);
+			ast_free(node->as.program.module_def);
+			ast_list_free(&node->as.program.imports);
 			ast_list_free(&node->as.program.functions);
 			ast_list_free(&node->as.program.structs);
 			ast_list_free(&node->as.program.globals);
@@ -529,7 +531,10 @@ static void dump_node(const ast_node_t *node, FILE *out, int depth) {
 	switch (node->kind) {
 		case AST_PROGRAM:
 			fprintf(out, "Program (%d:%d)\n", node->line, node->column);
-			dump_node(node->as.program.directive, out, depth + 1);
+			dump_node(node->as.program.module_def, out, depth + 1);
+			for (i = 0; i < node->as.program.imports.count; i++) {
+				dump_node(node->as.program.imports.items[i], out, depth + 1);
+			}
 			for (i = 0; i < node->as.program.structs.count; i++) {
 				dump_node(node->as.program.structs.items[i], out, depth + 1);
 			}

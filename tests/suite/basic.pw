@@ -1,0 +1,9 @@
+#moduledef "basic"
+
+fn test_print() {
+	print("Print Test");
+}
+
+fn main() {
+	export test_print;
+}

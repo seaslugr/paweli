@@ -150,17 +150,30 @@ typedef struct {
 	// note_local_reg_slot()'s own comment for the eligibility rule) and
 	// consumed by src/jit/jit_compile.c. local_reg_eligible[i] is only
 	// meaningful when i < local_slot_count; local_reg_types[i]
-	// (VAL_INT/VAL_FLOAT/VAL_BOOL) and local_reg_decl_end[i] (the
+	// (VAL_INT/VAL_FLOAT/VAL_BOOL for a scalar local, or VAL_OBJ for a
+	// string/struct/array/closure local -- see
+	// jit_compile.c's emit_op_get_local() for how a VAL_OBJ-typed
+	// binding's logical null-vs-real-object tag gets reconstructed at
+	// runtime from the payload, unlike a scalar's permanently-fixed
+	// tag) and local_reg_decl_end[i] (the
 	// bytecode offset right after this local's own declaration. See
 	// compiler_t's own comment on why the JIT needs this, since a
 	// declaration is never a dedicated opcode of its own) are only
-	// meaningful when local_reg_eligible[i] is true. All NULL/0 for a
+	// meaningful when local_reg_eligible[i] is true. local_reg_dead_at[i]
+	// (the bytecode offset right after this local's own scope-closing
+	// pop, or (size_t)-1 if it never explicitly closes before the
+	// function returns) is meaningful only when local_reg_types[i] ==
+	// VAL_OBJ; a scalar binding's tag is permanently fixed once baked,
+	// so its memory cell needs no such live-window tracking the way an
+	// object binding's does (see jit_compile.c's emit_gc_check()). All
+	// NULL/0 for a
 	// chunk with no locals at all (or one that was never routed through
 	// the finalization step, e.g. the top-level "<script>" chunk, which
 	// the JIT never compiles regardless).
 	bool *local_reg_eligible;
 	value_type_t *local_reg_types;
 	size_t *local_reg_decl_end;
+	size_t *local_reg_dead_at;
 	int local_slot_count;
 } chunk_t;
 

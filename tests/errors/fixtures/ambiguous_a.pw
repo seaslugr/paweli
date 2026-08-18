@@ -1,0 +1,9 @@
+#moduledef "fixtures/ambiguous_a"
+
+struct Item {
+	int id;
+}
+
+fn main() {
+	export Item;
+}

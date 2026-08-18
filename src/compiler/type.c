@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "runtime/module.h"
 #include "signature.h"
 #include "type.h"
 
@@ -74,11 +75,11 @@ void type_shutdown(void) {
 	g_func_types = NULL;
 }
 
-// TYPE_STRUCT equality is nominal (pointer identity: two struct types are
-// the same iff they came from the same declaration). TYPE_FUNCTION is
-// structural instead: it matches "any function with this shape", since a
-// function type is never declared anywhere, only ever spelled out
-// wherever it's used (a param, a var_decl, a return type).
+/* TYPE_STRUCT equality is nominal (pointer identity: two struct types are
+   the same iff they came from the same declaration). TYPE_FUNCTION is
+   structural instead: it matches "any function with this shape", since a
+   function type is never declared anywhere, only ever spelled out
+   wherever it's used (a param, a var_decl, a return type). */
 static bool func_type_equals(const func_type_t *a, const func_type_t *b) {
 	size_t i;
 
@@ -208,15 +209,15 @@ func_type_t *type_new_func_type(void) {
 	return alloc_func_type();
 }
 
-// Appends text (length characters, or the whole NUL-terminated string if
-// length is negative; struct/field names are spans into source text,
-// never NUL-terminated at their own end, so they always pass an explicit
-// length; plain C-string literals pass -1 for convenience) at offset,
-// clamped to never write past buffer_size. Returns the new offset, so a
-// caller can thread a sequence of appends through it. This is a
-// diagnostic-only formatting helper, so silent truncation on a
-// pathologically long signature is an acceptable outcome; it does not
-// need a real error path.
+/* Appends text (length characters, or the whole NUL-terminated string if
+   length is negative; struct/field names are spans into source text,
+   never NUL-terminated at their own end, so they always pass an explicit
+   length; plain C-string literals pass -1 for convenience) at offset,
+   clamped to never write past buffer_size. Returns the new offset, so a
+   caller can thread a sequence of appends through it. This is a
+   diagnostic-only formatting helper, so silent truncation on a
+   pathologically long signature is an acceptable outcome; it does not
+   need a real error path. */
 static size_t type_string_append(char *buffer, size_t buffer_size, size_t offset, const char *text, int length) {
 	int written;
 
@@ -355,12 +356,15 @@ int struct_def_find_field(const struct_def_t *def, const char *name, size_t name
 	return -1;
 }
 
-type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs, const struct_registry_t *imported_structs, bool *out_found) {
+type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs, const module_unit_t *const *imported_modules, size_t imported_module_count, bool *out_found, bool *out_ambiguous) {
 	type_t type;
 	struct_def_t *def;
+	struct_def_t *match;
 	func_type_t *ft;
 	size_t i;
+	size_t match_count;
 	bool sub_found;
+	bool sub_ambiguous;
 
 	type.array_depth = type_ref.array_depth;
 	type.struct_def = NULL;
@@ -368,6 +372,9 @@ type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs,
 
 	if (out_found != NULL) {
 		*out_found = true;
+	}
+	if (out_ambiguous != NULL) {
+		*out_ambiguous = false;
 	}
 
 	switch (type_ref.base_type) {
@@ -382,20 +389,40 @@ type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs,
 				type.struct_def = def;
 				return type;
 			}
-			if (imported_structs != NULL) {
-				def = struct_registry_find(imported_structs, type_ref.struct_name.start, type_ref.struct_name.length);
-				if (def != NULL && def->is_exported) {
-					type.kind = TYPE_STRUCT;
-					type.struct_def = def;
-					return type;
+			// A local match always wins outright (handled above); with
+			// none, every imported module's exports is checked, since an
+			// unqualified struct name is no longer guaranteed to come
+			// from at most one import now that transitive/multi-import
+			// resolution exists. Two different imports exporting the
+			// same struct name is ambiguous, not "first one wins": there
+			// is no principled ordering between two #module lines that
+			// would make picking one silently correct.
+			match_count = 0;
+			match = NULL;
+			for (i = 0; i < imported_module_count; i++) {
+				struct_def_t *candidate = struct_registry_find(imported_modules[i]->exported_structs, type_ref.struct_name.start, type_ref.struct_name.length);
+				if (candidate != NULL && candidate->is_exported) {
+					match = candidate;
+					match_count++;
 				}
+			}
+			if (match_count > 1) {
+				if (out_ambiguous != NULL) {
+					*out_ambiguous = true;
+				}
+				break;
+			}
+			if (match != NULL) {
+				type.kind = TYPE_STRUCT;
+				type.struct_def = match;
+				return type;
 			}
 			break;
 		case TOKEN_FN:
 			// Recursively resolved (a function type's own param/return
 			// types can themselves be function types, e.g. a factory
 			// returning a factory) against the same structs/
-			// imported_structs, and tracked process-lifetime rather than
+			// imported_modules, and tracked process-lifetime rather than
 			// by any one compiler_t; see alloc_func_type()'s own
 			// comment for why a nested fn's self-type never needed that,
 			// but a function-typed annotation in general does.
@@ -406,15 +433,21 @@ type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs,
 			ft->return_type = type_void();
 
 			for (i = 0; i < ft->param_count; i++) {
-				ft->param_types[i] = type_from_type_ref(type_ref.function_ref->param_types[i], structs, imported_structs, &sub_found);
+				ft->param_types[i] = type_from_type_ref(type_ref.function_ref->param_types[i], structs, imported_modules, imported_module_count, &sub_found, &sub_ambiguous);
 				if (!sub_found && out_found != NULL) {
 					*out_found = false;
 				}
+				if (sub_ambiguous && out_ambiguous != NULL) {
+					*out_ambiguous = true;
+				}
 			}
 			if (ft->has_return_type) {
-				ft->return_type = type_from_type_ref(type_ref.function_ref->return_type, structs, imported_structs, &sub_found);
+				ft->return_type = type_from_type_ref(type_ref.function_ref->return_type, structs, imported_modules, imported_module_count, &sub_found, &sub_ambiguous);
 				if (!sub_found && out_found != NULL) {
 					*out_found = false;
+				}
+				if (sub_ambiguous && out_ambiguous != NULL) {
+					*out_ambiguous = true;
 				}
 			}
 

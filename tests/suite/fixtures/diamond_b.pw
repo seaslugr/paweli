@@ -1,0 +1,10 @@
+#moduledef "fixtures/diamond_b"
+#module "diamond_shared"
+
+fn read_value(Shared s) -> int {
+	return s.value;
+}
+
+fn main() {
+	export read_value;
+}

@@ -20,7 +20,29 @@
 // local_slot_count <= 0), silently losing the JIT's entire register
 // allocation feature (R1/R2a) for every distribution form except
 // running straight from .pw source.
-#define PAW_VERSION 2
+// v3: function bodies additionally carry local_reg_dead_at, one more
+// per-slot array the same shape as local_reg_decl_end (see chunk.h's
+// own comment on it). Needed once VAL_OBJ-typed locals became
+// register-eligible: emit_gc_check() (jit_compile.c) uses it to know
+// when a bound object local's own scope has closed, so its memory slot
+// stops being safe to flush a live register into. Without this field,
+// an old .paw/--bin file would read back 0 for every slot's dead_at
+// instead of the real value (or the (size_t)-1 "never dies" sentinel a
+// fresh compile produces for most slots) -- silently reintroducing the
+// exact GC-unsafety window this whole mechanism exists to close, for
+// every VAL_OBJ local in a function loaded that way. Bumping the
+// version makes an old file fail loudly (incompatible version) instead
+// of loading with this gap.
+// v4: the single has_module bool + one hard-coded module slot became a
+// module_count (u32) plus that many (local_name, filename, source,
+// script_id, table_id) tuples, once #module imports stopped being
+// capped at "at most one per file, never transitive." A function's home
+// file, previously a single 0/1 bit, is now a u32 index into
+// [entry, module 0, module 1, ...]. An old file's single bit would read
+// back as a nonsensical home-file index into this scheme, not just a
+// slightly-wrong one, so this also has to be a hard version bump rather
+// than a format both readers could parse.
+#define PAW_VERSION 4
 
 #define PAW_FLAG_HAS_SOURCE 0x01
 
@@ -46,37 +68,41 @@
 #define PAW_EXE_TRAILER_SIZE (PAW_EXE_MAGIC_LENGTH + 8 + 8)
 
 // Every string, function, and module object reachable from the program's
-// roots (the entry script; the module's script and its own module_obj,
-// if there is a #module dependency; and any struct namespace object a
-// call site embeds directly as a constant; see compile_struct_call())
-// gets a stable id, assigned the first time it is seen. All three arrays
-// are searched linearly by pointer identity: a compiled program's
-// string/function/module count is small enough (this is a teaching-scale
-// language; programs stay far below the tens of thousands of functions
-// where it would matter) that a real hash table would be premature.
+// roots (the entry script; every module's own script and module_obj,
+// zero or more; and any struct namespace object a call site embeds
+// directly as a constant; see compile_struct_call()) gets a stable id,
+// assigned the first time it is seen. All three arrays are searched
+// linearly by pointer identity: a compiled program's string/function/
+// module count is small enough (this is a teaching-scale language;
+// programs stay far below the tens of thousands of functions where it
+// would matter) that a real hash table would be premature.
 //
-// entry_globals/module_globals are the two possible values of a
-// deserialized function's ->globals, borrowed from entry_script/
-// module_script themselves (see paw_write_file()); comparing a newly
-// discovered function's ->globals against them is how its home file is
+// file_globals holds every loaded file's own ->globals table, entry
+// first then each module in the same order as paw_write_payload()'s own
+// modules array; comparing a newly discovered function's ->globals
+// against each entry is how its home file (an index into this array) is
 // determined, rather than threading a "which file am I compiling for"
-// argument through every recursive call. A struct's own member
-// functions are only ever reachable through a namespace object's
-// members table (never through a script's own top-level globals), so
-// there is no other way to know which file they belong to.
+// argument through every recursive call. A struct's own member functions
+// are only ever reachable through a namespace object's members table
+// (never through a script's own top-level globals), so there is no
+// other way to know which file they belong to.
 typedef struct {
 	FILE *out;
 	bool ok;
 
-	table_t *entry_globals;
-	table_t *module_globals;
+	// [0] is the entry file's own globals; [1..file_globals_count) are
+	// modules[0..module_count), in the same order paw_write_payload()'s
+	// own modules array is given in. A function's home file (see
+	// writer_function_home_file()) is its index into this array.
+	table_t **file_globals;
+	size_t file_globals_count;
 
 	obj_string_t **strings;
 	size_t strings_count;
 	size_t strings_capacity;
 
 	obj_function_t **functions;
-	uint8_t *function_home;
+	uint32_t *function_home;
 	size_t functions_count;
 	size_t functions_capacity;
 
@@ -102,14 +128,14 @@ static void w_bytes(paw_writer_t *w, const void *data, size_t length);
 static void w_blob(paw_writer_t *w, const char *data, size_t length);
 static void w_cstr(paw_writer_t *w, const char *s);
 
-static uint8_t writer_function_home_file(const paw_writer_t *w, const obj_function_t *f);
+static uint32_t writer_function_home_file(const paw_writer_t *w, const obj_function_t *f);
 static uint32_t writer_intern_string(paw_writer_t *w, obj_string_t *s);
 static uint32_t writer_register_function(paw_writer_t *w, obj_function_t *f);
 static uint32_t writer_register_module(paw_writer_t *w, obj_module_t *m);
 static bool writer_write_constant(paw_writer_t *w, value_t value);
 static bool writer_write_function_body(paw_writer_t *w, size_t index);
 static bool writer_write_module_body(paw_writer_t *w, size_t index);
-static bool paw_write_payload(FILE *out, obj_function_t *entry_script, const char *entry_filename, const char *entry_source, obj_module_t *module_obj, obj_function_t *module_script, const char *module_local_name, size_t module_local_name_length, const char *module_filename, const char *module_source, bool strip_source);
+static bool paw_write_payload(FILE *out, obj_function_t *entry_script, const char *entry_filename, const char *entry_source, const paw_module_info_t *modules, size_t module_count, const paw_import_edge_t *edges, size_t edge_count, bool strip_source);
 
 static uint8_t r_u8(paw_reader_t *r);
 static uint16_t r_u16(paw_reader_t *r);
@@ -183,8 +209,19 @@ static void w_cstr(paw_writer_t *w, const char *s) {
 	w_blob(w, s, s == NULL ? 0 : strlen(s));
 }
 
-static uint8_t writer_function_home_file(const paw_writer_t *w, const obj_function_t *f) {
-	return (w->module_globals != NULL && f->globals == w->module_globals) ? 1 : 0;
+static uint32_t writer_function_home_file(const paw_writer_t *w, const obj_function_t *f) {
+	size_t i;
+
+	for (i = 0; i < w->file_globals_count; i++) {
+		if (f->globals == w->file_globals[i]) {
+			return (uint32_t)i;
+		}
+	}
+	// Every function belongs to some loaded file; this should be
+	// unreachable. Falling back to the entry file (0) rather than an
+	// out-of-range index keeps a from-buggy-future-change bug from
+	// corrupting the written file outright.
+	return 0;
 }
 
 static uint32_t writer_intern_string(paw_writer_t *w, obj_string_t *s) {
@@ -208,13 +245,13 @@ static uint32_t writer_intern_string(paw_writer_t *w, obj_string_t *s) {
 	return (uint32_t)(w->strings_count++);
 }
 
-// writer_register_function() and writer_register_module() are mutually
-// recursive (a function's constants can embed a struct namespace object,
-// and a namespace object's members are themselves functions), and
-// paweli's own struct functions can call siblings on the same struct,
-// which embeds the same namespace object right back as one of its own
-// constants. Both reserve their id before recursing into whatever they
-// reference, so that cycle terminates instead of recursing forever.
+/* writer_register_function() and writer_register_module() are mutually
+   recursive (a function's constants can embed a struct namespace object,
+   and a namespace object's members are themselves functions), and
+   paweli's own struct functions can call siblings on the same struct,
+   which embeds the same namespace object right back as one of its own
+   constants. Both reserve their id before recursing into whatever they
+   reference, so that cycle terminates instead of recursing forever. */
 static uint32_t writer_register_function(paw_writer_t *w, obj_function_t *f) {
 	size_t index;
 	size_t i;
@@ -228,7 +265,7 @@ static uint32_t writer_register_function(paw_writer_t *w, obj_function_t *f) {
 	if (w->functions_count == w->functions_capacity) {
 		w->functions_capacity = w->functions_capacity < 8 ? 8 : w->functions_capacity * 2;
 		w->functions = realloc(w->functions, w->functions_capacity * sizeof(obj_function_t *));
-		w->function_home = realloc(w->function_home, w->functions_capacity * sizeof(uint8_t));
+		w->function_home = realloc(w->function_home, w->functions_capacity * sizeof(uint32_t));
 	}
 	index = w->functions_count;
 	w->functions[index] = f;
@@ -337,7 +374,7 @@ static bool writer_write_function_body(paw_writer_t *w, size_t index) {
 
 	w_u32(w, writer_intern_string(w, f->name));
 	w_u32(w, (uint32_t)f->arity);
-	w_u8(w, w->function_home[index]);
+	w_u32(w, w->function_home[index]);
 
 	w_u32(w, (uint32_t)f->chunk.count);
 	w_bytes(w, f->chunk.code, f->chunk.count);
@@ -355,16 +392,17 @@ static bool writer_write_function_body(paw_writer_t *w, size_t index) {
 		}
 	}
 
-	// See chunk.h's own comment on these three fields: local_slot_count
-	// (and hence all three arrays) is 0/NULL for a chunk with no
+	// See chunk.h's own comment on these four fields: local_slot_count
+	// (and hence all four arrays) is 0/NULL for a chunk with no
 	// register-eligible locals at all, same as finalize_local_reg_info()
 	// itself leaves them for that case. Nothing to write beyond the
-	// count. local_reg_decl_end goes through w_i64 (not w_u32) since it
-	// legitimately needs the full 64-bit range: (size_t)-1 is its
-	// "not applicable" sentinel, and truncating that to 32 bits on write
-	// would silently reconstruct a different (if still practically
-	// never-matching) value on read. It is not a case worth relying on
-	// "probably still correct in practice" for.
+	// count. local_reg_decl_end/local_reg_dead_at both go through w_i64
+	// (not w_u32) since they legitimately need the full 64-bit range:
+	// (size_t)-1 is their shared "not applicable" sentinel, and
+	// truncating that to 32 bits on write would silently reconstruct a
+	// different (if still practically never-matching) value on read. It
+	// is not a case worth relying on "probably still correct in
+	// practice" for.
 	w_u32(w, (uint32_t)f->chunk.local_slot_count);
 	for (i = 0; i < (size_t)f->chunk.local_slot_count; i++) {
 		w_u8(w, f->chunk.local_reg_eligible[i] ? 1 : 0);
@@ -374,6 +412,9 @@ static bool writer_write_function_body(paw_writer_t *w, size_t index) {
 	}
 	for (i = 0; i < (size_t)f->chunk.local_slot_count; i++) {
 		w_i64(w, (int64_t)f->chunk.local_reg_decl_end[i]);
+	}
+	for (i = 0; i < (size_t)f->chunk.local_slot_count; i++) {
+		w_i64(w, (int64_t)f->chunk.local_reg_dead_at[i]);
 	}
 
 	return true;
@@ -436,57 +477,68 @@ bool paw_is_paw_file(const char *path) {
    caller writing into the middle of a larger file needs to decide for
    itself what "failed" means for the whole file, not just this part.
    Returns false on any write failure. */
-static bool paw_write_payload(FILE *out, obj_function_t *entry_script, const char *entry_filename, const char *entry_source, obj_module_t *module_obj, obj_function_t *module_script, const char *module_local_name, size_t module_local_name_length, const char *module_filename, const char *module_source, bool strip_source) {
+static bool paw_write_payload(FILE *out, obj_function_t *entry_script, const char *entry_filename, const char *entry_source, const paw_module_info_t *modules, size_t module_count, const paw_import_edge_t *edges, size_t edge_count, bool strip_source) {
 	paw_writer_t w;
 	uint32_t entry_id;
-	uint32_t module_script_id;
-	uint32_t module_table_id;
+	uint32_t *module_script_ids;
+	uint32_t *module_table_ids;
 	size_t i;
 	bool ok;
 
 	memset(&w, 0, sizeof(w));
 	w.ok = true;
 	w.out = out;
-	w.entry_globals = entry_script->globals;
-	w.module_globals = module_script != NULL ? module_script->globals : NULL;
+	w.file_globals_count = module_count + 1;
+	w.file_globals = malloc(w.file_globals_count * sizeof(table_t *));
+	w.file_globals[0] = entry_script->globals;
+	for (i = 0; i < module_count; i++) {
+		w.file_globals[i + 1] = modules[i].script->globals;
+	}
 
 	w_bytes(&w, PAW_MAGIC, PAW_MAGIC_LENGTH);
 	w_u16(&w, PAW_VERSION);
 	w_u8(&w, strip_source ? 0 : PAW_FLAG_HAS_SOURCE);
-	w_u8(&w, module_obj != NULL ? 1 : 0);
+	w_u32(&w, (uint32_t)module_count);
 
 	w_cstr(&w, entry_filename);
 	if (!strip_source) {
 		w_cstr(&w, entry_source);
 	}
 
-	if (module_obj != NULL) {
-		// module_local_name is a raw byte span (module_unit_t's own
-		// local_name/local_name_length), not a NUL-terminated C string,
-		// unlike every other string this function writes; w_cstr()
-		// would read past its end. module_obj's own name travels through
-		// the generic module table below instead of being duplicated
-		// here, same as every other module (a struct namespace, for
-		// instance) never gets special-cased in the header.
-		w_blob(&w, module_local_name, module_local_name_length);
-		w_cstr(&w, module_filename);
+	for (i = 0; i < module_count; i++) {
+		w_cstr(&w, modules[i].filename);
 		if (!strip_source) {
-			w_cstr(&w, module_source);
+			w_cstr(&w, modules[i].source);
 		}
 	}
 
+	// Every #module import edge in the whole program (which file binds
+	// which module under what local name), not just the entry file's
+	// own: a module that itself imports another module needs that
+	// binding rebuilt into its own globals table too, the same way
+	// module_compile() does for a from-source compile. local_name is a
+	// raw byte span (module_unit_t's own local_name/local_name_length),
+	// not a NUL-terminated C string, unlike every other string this
+	// function writes; w_cstr() would read past its end.
+	w_u32(&w, (uint32_t)edge_count);
+	for (i = 0; i < edge_count; i++) {
+		w_u32(&w, (uint32_t)edges[i].importer_index);
+		w_u32(&w, (uint32_t)edges[i].target_index);
+		w_blob(&w, edges[i].local_name, edges[i].local_name_length);
+	}
+
 	entry_id = writer_register_function(&w, entry_script);
-	module_script_id = 0;
-	module_table_id = 0;
-	if (module_obj != NULL) {
-		module_script_id = writer_register_function(&w, module_script);
+	module_script_ids = module_count > 0 ? malloc(module_count * sizeof(uint32_t)) : NULL;
+	module_table_ids = module_count > 0 ? malloc(module_count * sizeof(uint32_t)) : NULL;
+	for (i = 0; i < module_count; i++) {
+		module_script_ids[i] = writer_register_function(&w, modules[i].script);
 		// Never found by the constant walk above: an imported module's
 		// members are called through a name lookup (OP_GET_GLOBAL the
 		// local binding, then OP_GET_PROPERTY), not an embedded constant
 		// the way a struct namespace is; see compile_module_call() vs.
 		// compile_struct_call() in compiler.c. So it needs registering
 		// explicitly, as its own root.
-		module_table_id = writer_register_module(&w, module_obj);
+		module_table_ids[i] = writer_register_module(&w, modules[i].module_obj);
 	}
 
 	w_u32(&w, (uint32_t)w.strings_count);
@@ -521,21 +573,24 @@ static bool paw_write_payload(FILE *out, obj_function_t *entry_script, const cha
 	}
 
 	w_u32(&w, entry_id);
-	if (module_obj != NULL) {
-		w_u32(&w, module_script_id);
-		w_u32(&w, module_table_id);
+	for (i = 0; i < module_count; i++) {
+		w_u32(&w, module_script_ids[i]);
+		w_u32(&w, module_table_ids[i]);
 	}
 
 	ok = w.ok;
+	free(w.file_globals);
 	free(w.strings);
 	free(w.functions);
 	free(w.function_home);
 	free(w.modules);
+	free(module_script_ids);
+	free(module_table_ids);
 
 	return ok;
 }
 
-bool paw_write_file(const char *path, obj_function_t *entry_script, const char *entry_filename, const char *entry_source, obj_module_t *module_obj, obj_function_t *module_script, const char *module_local_name, size_t module_local_name_length, const char *module_filename, const char *module_source, bool strip_source) {
+bool paw_write_file(const char *path, obj_function_t *entry_script, const char *entry_filename, const char *entry_source, const paw_module_info_t *modules, size_t module_count, const paw_import_edge_t *edges, size_t edge_count, bool strip_source) {
 	FILE *out;
 	bool ok;
 
@@ -545,7 +600,7 @@ bool paw_write_file(const char *path, obj_function_t *entry_script, const char *
 		return false;
 	}
 
-	ok = paw_write_payload(out, entry_script, entry_filename, entry_source, module_obj, module_script, module_local_name, module_local_name_length, module_filename, module_source, strip_source);
+	ok = paw_write_payload(out, entry_script, entry_filename, entry_source, modules, module_count, edges, edge_count, strip_source);
 	fclose(out);
 
 	if (!ok) {
@@ -711,26 +766,27 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 	char magic[PAW_MAGIC_LENGTH];
 	uint16_t version;
 	uint8_t flags;
-	uint8_t has_module;
+	uint32_t module_count;
 	bool has_source;
 	char *entry_filename;
 	char *entry_source;
-	char *module_local_name;
-	char *module_filename;
-	char *module_source;
+	char **module_filenames;
+	char **module_sources;
+	uint32_t edge_count;
+	uint32_t *edge_importer_index;
+	uint32_t *edge_target_index;
+	char **edge_local_names;
+	size_t *edge_local_name_lengths;
 	uint32_t string_count;
 	obj_string_t **strings_arr;
 	uint32_t function_count;
 	obj_function_t **functions_arr;
-	uint32_t module_count;
+	uint32_t modules_disk_count;
 	obj_module_t **modules_arr;
-	table_t *entry_globals;
-	table_t *module_globals;
-	table_t *file_globals[2];
+	table_t **file_globals;
 	uint32_t entry_id;
-	uint32_t module_script_id;
-	uint32_t module_table_id;
-	obj_module_t *module_obj;
+	uint32_t *module_script_ids;
+	uint32_t *module_table_ids;
 	paw_program_t *program;
 	uint32_t i;
 	uint32_t j;
@@ -745,7 +801,7 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 	}
 	version = r_u16(&r);
 	flags = r_u8(&r);
-	has_module = r_u8(&r);
+	module_count = r_u32(&r);
 
 	if (!r.ok || memcmp(magic, PAW_MAGIC, PAW_MAGIC_LENGTH) != 0) {
 		fprintf(stderr, "paweli: '%s' is not a valid .paw file\n", display_path);
@@ -763,13 +819,26 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 	entry_filename = r_blob_cstr(&r, NULL);
 	entry_source = has_source ? r_blob_cstr(&r, NULL) : NULL;
 
-	module_local_name = NULL;
-	module_filename = NULL;
-	module_source = NULL;
-	if (has_module) {
-		module_local_name = r_blob_cstr(&r, NULL);
-		module_filename = r_blob_cstr(&r, NULL);
-		module_source = has_source ? r_blob_cstr(&r, NULL) : NULL;
+	module_filenames = module_count > 0 ? malloc(module_count * sizeof(char *)) : NULL;
+	module_sources = module_count > 0 ? malloc(module_count * sizeof(char *)) : NULL;
+	for (i = 0; i < module_count; i++) {
+		module_filenames[i] = r_blob_cstr(&r, NULL);
+		module_sources[i] = has_source ? r_blob_cstr(&r, NULL) : NULL;
+	}
+
+	// Every #module import edge in the whole program: importer_index 0
+	// is the entry file, 1..module_count is modules[importer_index - 1];
+	// target_index is always a plain modules[] index (never offset by
+	// one), since only a module can be a target, never the entry.
+	edge_count = r_u32(&r);
+	edge_importer_index = edge_count > 0 ? malloc(edge_count * sizeof(uint32_t)) : NULL;
+	edge_target_index = edge_count > 0 ? malloc(edge_count * sizeof(uint32_t)) : NULL;
+	edge_local_names = edge_count > 0 ? malloc(edge_count * sizeof(char *)) : NULL;
+	edge_local_name_lengths = edge_count > 0 ? malloc(edge_count * sizeof(size_t)) : NULL;
+	for (i = 0; i < edge_count; i++) {
+		edge_importer_index[i] = r_u32(&r);
+		edge_target_index[i] = r_u32(&r);
+		edge_local_names[i] = r_blob_cstr(&r, &edge_local_name_lengths[i]);
 	}
 
 	if (!r.ok) {
@@ -777,29 +846,38 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 		free(raw);
 		free(entry_filename);
 		free(entry_source);
-		free(module_local_name);
-		free(module_filename);
-		free(module_source);
+		for (i = 0; i < module_count; i++) {
+			free(module_filenames[i]);
+			free(module_sources[i]);
+		}
+		free(module_filenames);
+		free(module_sources);
+		for (i = 0; i < edge_count; i++) {
+			free(edge_local_names[i]);
+		}
+		free(edge_importer_index);
+		free(edge_target_index);
+		free(edge_local_names);
+		free(edge_local_name_lengths);
 		return NULL;
 	}
 
-	entry_globals = vm_new_file_globals(vm);
-	module_globals = has_module ? vm_new_file_globals(vm) : NULL;
-	file_globals[0] = entry_globals;
-	file_globals[1] = module_globals;
+	file_globals = malloc((module_count + 1) * sizeof(table_t *));
+	file_globals[0] = vm_new_file_globals(vm);
+	for (i = 0; i < module_count; i++) {
+		file_globals[i + 1] = vm_new_file_globals(vm);
+	}
 
-	// entry_source/module_source may be NULL (a --strip-source build):
-	// vm_track_owned_source()/vm_free() already treat a NULL source as
-	// "nothing to free", and find_source_line() (diagnostic.c) already
-	// treats a NULL source as "no snippet available", the same fallback
-	// path a genuinely out-of-range line takes.
+	// entry_source/each module_sources[i] may be NULL (a --strip-source
+	// build): vm_track_owned_source()/vm_free() already treat a NULL
+	// source as "nothing to free", and find_source_line() (diagnostic.c)
+	// already treats a NULL source as "no snippet available", the same
+	// fallback path a genuinely out-of-range line takes.
 	vm_track_owned_source(vm, entry_filename, entry_source);
 	vm->filename = entry_filename;
 	vm->source = entry_source;
-	if (has_module) {
-		vm_track_owned_source(vm, module_filename, module_source);
-	} else {
-		free(module_filename);
+	for (i = 0; i < module_count; i++) {
+		vm_track_owned_source(vm, module_filenames[i], module_sources[i]);
 	}
 
 	string_count = r_u32(&r);
@@ -834,9 +912,9 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 		functions_arr[i] = object_new_function(vm->heap);
 	}
 
-	module_count = r_u32(&r);
-	modules_arr = malloc((module_count == 0 ? 1 : module_count) * sizeof(obj_module_t *));
-	for (i = 0; i < module_count && r.ok; i++) {
+	modules_disk_count = r_u32(&r);
+	modules_arr = malloc((modules_disk_count == 0 ? 1 : modules_disk_count) * sizeof(obj_module_t *));
+	for (i = 0; i < modules_disk_count && r.ok; i++) {
 		uint32_t name_id;
 		uint32_t member_count;
 
@@ -866,7 +944,7 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 		obj_function_t *f;
 		uint32_t name_id;
 		uint32_t code_count;
-		uint8_t home_file;
+		uint32_t home_file;
 		uint32_t constants_count;
 		uint32_t local_slot_count;
 
@@ -874,10 +952,17 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 
 		name_id = r_u32(&r);
 		f->arity = (int)r_u32(&r);
-		home_file = r_u8(&r);
-		f->globals = file_globals[home_file > 1 ? 0 : home_file];
-		f->filename = home_file == 1 ? module_filename : entry_filename;
-		f->source = home_file == 1 ? module_source : entry_source;
+		home_file = r_u32(&r);
+		if (home_file > module_count) {
+			// Corrupt: there is no file at this index. Fall back to the
+			// entry file rather than reading out of bounds below; the
+			// overall !r.ok check a few lines down still fails the load.
+			r.ok = false;
+			home_file = 0;
+		}
+		f->globals = file_globals[home_file];
+		f->filename = home_file == 0 ? entry_filename : module_filenames[home_file - 1];
+		f->source = home_file == 0 ? entry_source : module_sources[home_file - 1];
 
 		if (!r.ok || name_id == PAW_NO_STRING) {
 			f->name = NULL;
@@ -938,7 +1023,7 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 				break;
 			case PAW_CONST_MODULE:
 				ref = r_u32(&r);
-				if (ref >= module_count) {
+				if (ref >= modules_disk_count) {
 					r.ok = false;
 					break;
 				}
@@ -960,6 +1045,7 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 			f->chunk.local_reg_eligible = malloc((size_t)local_slot_count * sizeof(bool));
 			f->chunk.local_reg_types = malloc((size_t)local_slot_count * sizeof(value_type_t));
 			f->chunk.local_reg_decl_end = malloc((size_t)local_slot_count * sizeof(size_t));
+			f->chunk.local_reg_dead_at = malloc((size_t)local_slot_count * sizeof(size_t));
 			for (j = 0; j < local_slot_count; j++) {
 				f->chunk.local_reg_eligible[j] = r_u8(&r) != 0;
 			}
@@ -969,55 +1055,103 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 			for (j = 0; j < local_slot_count; j++) {
 				f->chunk.local_reg_decl_end[j] = (size_t)r_i64(&r);
 			}
+			for (j = 0; j < local_slot_count; j++) {
+				f->chunk.local_reg_dead_at[j] = (size_t)r_i64(&r);
+			}
 		}
 	}
 
 	entry_id = r_u32(&r);
-	module_script_id = 0;
-	module_obj = NULL;
+	module_script_ids = module_count > 0 ? malloc(module_count * sizeof(uint32_t)) : NULL;
+	module_table_ids = module_count > 0 ? malloc(module_count * sizeof(uint32_t)) : NULL;
 
-	if (r.ok && has_module) {
-		module_script_id = r_u32(&r);
-		module_table_id = r_u32(&r);
-		if (!r.ok || module_table_id >= module_count) {
+	for (i = 0; i < module_count && r.ok; i++) {
+		module_script_ids[i] = r_u32(&r);
+		module_table_ids[i] = r_u32(&r);
+		if (!r.ok || module_table_ids[i] >= modules_disk_count) {
 			r.ok = false;
-		} else {
-			module_obj = modules_arr[module_table_id];
-			table_set(entry_globals, object_new_string(vm->heap, vm->strings, module_local_name, strlen(module_local_name)), value_obj((obj_t *)module_obj));
+			break;
 		}
+	}
+
+	// Every import edge, now that module_table_ids[] (which "module i"
+	// maps to which modules_arr[] runtime object) is fully known: binds
+	// each importer's own file_globals with each of its targets, under
+	// its own local name, exactly the graph a from-source compile builds
+	// (see module_compile()'s matching table_set() and
+	// compile_from_source()'s (main.c) for the entry file's own).
+	for (i = 0; i < edge_count && r.ok; i++) {
+		if (edge_importer_index[i] > module_count || edge_target_index[i] >= module_count) {
+			r.ok = false;
+			break;
+		}
+		table_set(file_globals[edge_importer_index[i]], object_new_string(vm->heap, vm->strings, edge_local_names[i], edge_local_name_lengths[i]), value_obj((obj_t *)modules_arr[module_table_ids[edge_target_index[i]]]));
 	}
 
 	free(strings_arr);
 	free(modules_arr);
-	free(module_local_name);
+	for (i = 0; i < edge_count; i++) {
+		free(edge_local_names[i]);
+	}
+	free(edge_importer_index);
+	free(edge_target_index);
+	free(edge_local_names);
+	free(edge_local_name_lengths);
 	free(raw);
 
-	if (!r.ok || entry_id >= function_count || (has_module && module_script_id >= function_count)) {
+	if (!r.ok || entry_id >= function_count) {
 		fprintf(stderr, "paweli: '%s' is truncated or corrupt\n", display_path);
 		free(functions_arr);
+		free(module_script_ids);
+		free(module_table_ids);
+		free(file_globals);
+		free(module_filenames);
+		free(module_sources);
 		return NULL;
+	}
+	for (i = 0; i < module_count; i++) {
+		if (module_script_ids[i] >= function_count) {
+			fprintf(stderr, "paweli: '%s' is truncated or corrupt\n", display_path);
+			free(functions_arr);
+			free(module_script_ids);
+			free(module_table_ids);
+			free(file_globals);
+			free(module_filenames);
+			free(module_sources);
+			return NULL;
+		}
 	}
 
 	// Rooted immediately, under the same reserved "<script>" key
 	// compiler_compile() itself uses (see its own comment on why: the
 	// key can never collide with a real identifier or mangled name).
-	// Neither script is reachable from any GC root yet. That only
-	// happens once main.c's vm_run() pushes it onto the stack, and
-	// main.c has to vm_run() the module script before the entry script,
-	// so without this a collection triggered by running the module
-	// first (very reachable under a large module, and guaranteed under
-	// PAWELI_GC_STRESS) would sweep the still-unrooted entry script out
-	// from under it.
-	table_set(entry_globals, object_new_string(vm->heap, vm->strings, "<script>", 8), value_obj((obj_t *)functions_arr[entry_id]));
-	if (has_module) {
-		table_set(module_globals, object_new_string(vm->heap, vm->strings, "<script>", 8), value_obj((obj_t *)functions_arr[module_script_id]));
+	// None of these scripts are reachable from any GC root yet. That
+	// only happens once main.c's vm_run() pushes one onto the stack, and
+	// main.c has to vm_run() every module's script (in module_scripts'
+	// own dependency order) before the entry script, so without this a
+	// collection triggered by running an early module first (very
+	// reachable under a large module, and guaranteed under
+	// PAWELI_GC_STRESS) would sweep a not-yet-run script out from under
+	// whatever hasn't run yet.
+	table_set(file_globals[0], object_new_string(vm->heap, vm->strings, "<script>", 8), value_obj((obj_t *)functions_arr[entry_id]));
+	for (i = 0; i < module_count; i++) {
+		table_set(file_globals[i + 1], object_new_string(vm->heap, vm->strings, "<script>", 8), value_obj((obj_t *)functions_arr[module_script_ids[i]]));
 	}
 
 	program = malloc(sizeof(paw_program_t));
 	program->entry_script = functions_arr[entry_id];
-	program->module_script = has_module ? functions_arr[module_script_id] : NULL;
+	program->module_count = module_count;
+	program->module_scripts = module_count > 0 ? malloc(module_count * sizeof(obj_function_t *)) : NULL;
+	for (i = 0; i < module_count; i++) {
+		program->module_scripts[i] = functions_arr[module_script_ids[i]];
+	}
 
 	free(functions_arr);
+	free(module_script_ids);
+	free(module_table_ids);
+	free(file_globals);
+	free(module_filenames);
+	free(module_sources);
 	return program;
 }
 
@@ -1114,7 +1248,7 @@ bool paw_is_self_extracting(const char *exe_path, uint64_t *out_offset, uint64_t
 	return true;
 }
 
-bool paw_build_executable(const char *output_path, const char *stub_path, obj_function_t *entry_script, const char *entry_filename, const char *entry_source, obj_module_t *module_obj, obj_function_t *module_script, const char *module_local_name, size_t module_local_name_length, const char *module_filename, const char *module_source, bool strip_source) {
+bool paw_build_executable(const char *output_path, const char *stub_path, obj_function_t *entry_script, const char *entry_filename, const char *entry_source, const paw_module_info_t *modules, size_t module_count, const paw_import_edge_t *edges, size_t edge_count, bool strip_source) {
 	FILE *stub;
 	FILE *out;
 	uint8_t buffer[65536];
@@ -1154,7 +1288,7 @@ bool paw_build_executable(const char *output_path, const char *stub_path, obj_fu
 	}
 
 	payload_start = ftell(out);
-	ok = paw_write_payload(out, entry_script, entry_filename, entry_source, module_obj, module_script, module_local_name, module_local_name_length, module_filename, module_source, strip_source);
+	ok = paw_write_payload(out, entry_script, entry_filename, entry_source, modules, module_count, edges, edge_count, strip_source);
 	payload_end = ftell(out);
 
 	if (ok) {
@@ -1181,5 +1315,6 @@ bool paw_build_executable(const char *output_path, const char *stub_path, obj_fu
 }
 
 void paw_program_free(paw_program_t *program) {
+	free(program->module_scripts);
 	free(program);
 }

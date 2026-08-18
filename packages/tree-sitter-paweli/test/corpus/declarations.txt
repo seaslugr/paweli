@@ -1,0 +1,115 @@
+==================
+Module import and moduledef
+==================
+
+#module "geometry";
+#moduledef "shapes"
+
+---
+
+(source_file
+  (module_import
+    (string_literal))
+  (module_def
+    (string_literal)))
+
+==================
+Struct declaration
+==================
+
+struct Point {
+	int x;
+	float y = 0.0;
+}
+
+---
+
+(source_file
+  (struct_declaration
+    (identifier)
+    (struct_field
+      (identifier))
+    (struct_field
+      (identifier)
+      (float_literal))))
+
+==================
+Function declaration with parameters and return type
+==================
+
+fn add(int a, int b) -> int {
+	return a + b;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier))
+      (parameter
+        (identifier)))
+    (block
+      (return_statement
+        (binary_expression
+          (identifier)
+          (identifier))))))
+
+==================
+Function declaration with no parameters and no return type
+==================
+
+fn tick() {
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block)))
+
+==================
+Variable declaration
+==================
+
+int count = 0;
+Point origin = { x: 0, y: 0 };
+
+---
+
+(source_file
+  (variable_declaration
+    (identifier)
+    (int_literal))
+  (variable_declaration
+    (identifier)
+    (identifier)
+    (struct_literal
+      (struct_field_init
+        (identifier)
+        (int_literal))
+      (struct_field_init
+        (identifier)
+        (int_literal)))))
+
+==================
+Export statement
+==================
+
+fn helper() {
+	export helper;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (export_statement
+        (identifier)))))

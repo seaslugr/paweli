@@ -18,7 +18,8 @@ static bool check_var_decl_start(parser_t *parser);
 static type_ref_t parse_type_ref(parser_t *parser);
 static void synchronize(parser_t *parser);
 
-static ast_node_t *parse_directive(parser_t *parser);
+static ast_node_t *parse_module_import(parser_t *parser);
+static ast_node_t *parse_module_def(parser_t *parser);
 static ast_node_t *parse_function_decl(parser_t *parser);
 static void parse_params(parser_t *parser, ast_node_t *fn_node);
 static ast_node_t *parse_struct_decl(parser_t *parser);
@@ -71,17 +72,21 @@ static void error_at(parser_t *parser, token_t token, const char *code, const ch
 	parser->panic_mode = true;
 	parser->had_error = true;
 
-	/* A TOKEN_ERROR came from the lexer, not from a parser expectation
-	   that failed, so it carries its own "lexer::*" code and its message
-	   text lives in token.start/length rather than in `message`. */
+	// A TOKEN_ERROR came from the lexer, not from a parser expectation
+	// that failed, so it carries its own "lexer::*" code and its message
+	// text lives in token.start/length rather than in `message`.
 	actual_code = (token.type == TOKEN_ERROR && token.error_code != NULL) ? token.error_code : code;
 
 	if (token.type == TOKEN_EOF) {
-		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, "at end of file: %s", message);
+		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, 0, "at end of file: %s", message);
 	} else if (token.type == TOKEN_ERROR) {
-		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, "%.*s", (int)token.length, token.start);
+		// token.length here is the lexer message's length, not a source
+		// span (see error_token() in lexer.c), so it can't drive the
+		// caret width; a single caret at the error's source position is
+		// all that's meaningful.
+		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, 0, "%.*s", (int)token.length, token.start);
 	} else {
-		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, "at '%.*s': %s", (int)token.length, token.start, message);
+		diagnostic_emit(DIAG_ERROR, actual_code, parser->filename, parser->source, token.line, token.column, (int)token.length, "at '%.*s': %s", (int)token.length, token.start, message);
 	}
 }
 
@@ -303,30 +308,30 @@ static void synchronize(parser_t *parser) {
 	}
 }
 
-static ast_node_t *parse_directive(parser_t *parser) {
+static ast_node_t *parse_module_import(parser_t *parser) {
 	token_t name;
 	int line;
 	int column;
 
-	if (check(parser, TOKEN_MODULE)) {
-		line = parser->current.line;
-		column = parser->current.column;
-		advance(parser);
-		consume(parser, TOKEN_STRING_LITERAL, "expected a string literal after '#module'");
-		name = parser->previous;
-		return ast_new_module_import(name, line, column);
-	}
+	line = parser->current.line;
+	column = parser->current.column;
+	advance(parser);
+	consume(parser, TOKEN_STRING_LITERAL, "expected a string literal after '#module'");
+	name = parser->previous;
+	return ast_new_module_import(name, line, column);
+}
 
-	if (check(parser, TOKEN_MODULEDEF)) {
-		line = parser->current.line;
-		column = parser->current.column;
-		advance(parser);
-		consume(parser, TOKEN_STRING_LITERAL, "expected a string literal after '#moduledef'");
-		name = parser->previous;
-		return ast_new_module_def(name, line, column);
-	}
+static ast_node_t *parse_module_def(parser_t *parser) {
+	token_t name;
+	int line;
+	int column;
 
-	return NULL;
+	line = parser->current.line;
+	column = parser->current.column;
+	advance(parser);
+	consume(parser, TOKEN_STRING_LITERAL, "expected a string literal after '#moduledef'");
+	name = parser->previous;
+	return ast_new_module_def(name, line, column);
 }
 
 static ast_node_t *parse_function_decl(parser_t *parser) {
@@ -339,12 +344,12 @@ static ast_node_t *parse_function_decl(parser_t *parser) {
 
 	if (!check(parser, TOKEN_FN)) {
 		error_at_current(parser, "parser::expected-function", "expected a function declaration ('fn')");
-		/* Guaranteed to consume at least this token before synchronizing:
-		   this check runs before anything else has advanced past it, so if
-		   it happens to already be one of synchronize()'s own stop-set
-		   tokens (return, if, a type keyword, ...), synchronize() would
-		   return immediately without moving forward, and the caller would
-		   retry parse_function_decl() on the same token forever. */
+		// Guaranteed to consume at least this token before synchronizing:
+		// this check runs before anything else has advanced past it, so if
+		// it happens to already be one of synchronize()'s own stop-set
+		// tokens (return, if, a type keyword, ...), synchronize() would
+		// return immediately without moving forward, and the caller would
+		// retry parse_function_decl() on the same token forever.
 		advance(parser);
 		synchronize(parser);
 		return NULL;
@@ -1167,16 +1172,11 @@ static ast_node_t *parse_and(parser_t *parser) {
 	return expr;
 }
 
-// Bitwise `|`, `^`, `&`, in ascending precedence (`|` loosest, `&`
-// tightest), matching C's own ladder. paweli's C lineage is the
-// reasoning `docs/design.md` already gives for other syntax choices, so
-// bitwise operators follow the same convention rather than inventing a
-// new one. All three sit strictly between the logical operators (`&&`/
-// `||`, which short-circuit and are not related to these at all despite
-// the similar-looking tokens) and equality, so `a & b == c` parses as
-// `a & (b == c)`, the same surprising-if-you-don't-know-C grouping C
-// itself has, documented explicitly in docs/paweli/syntax.md rather
-// than silently inherited.
+/* Bitwise `|`, `^`, `&`, in ascending precedence (`|` loosest, `&`
+   tightest), matching C's own ladder. All three sit strictly between the
+   logical operators (`&&`/`||`, which short-circuit and are unrelated
+   despite the similar-looking tokens) and equality, so `a & b == c`
+   parses as `a & (b == c)`, not `(a & b) == c`. */
 static ast_node_t *parse_bitor(parser_t *parser) {
 	ast_node_t *expr;
 	token_t op;
@@ -1535,13 +1535,30 @@ void parser_init(parser_t *parser, const char *source, const char *filename) {
 }
 
 ast_node_t *parser_parse_program(parser_t *parser) {
-	ast_node_t *directive;
 	ast_node_t *program;
 	ast_node_t *item;
 	ast_list_t decorators;
 
-	directive = parse_directive(parser);
-	program = ast_new_program(directive);
+	program = ast_new_program();
+
+	if (check(parser, TOKEN_MODULEDEF)) {
+		program->as.program.module_def = parse_module_def(parser);
+	}
+
+	while (check(parser, TOKEN_MODULE)) {
+		ast_list_push(&program->as.program.imports, parse_module_import(parser));
+	}
+
+	// A second '#moduledef', or one after any '#module' import, is caught
+	// here rather than by the two checks above ever re-triggering (they
+	// each only run once/in a fixed loop position): report it, then parse
+	// and discard it so the rest of the file still gets parsed instead of
+	// cascading into item-parser garbage.
+	if (check(parser, TOKEN_MODULEDEF)) {
+		error_at_current(parser, "parser::misplaced-moduledef", "'#moduledef' must be the first line of the file, before any '#module' imports, and only once");
+		ast_free(parse_module_def(parser));
+		synchronize(parser);
+	}
 
 	while (!check(parser, TOKEN_EOF)) {
 		ast_list_init(&decorators);

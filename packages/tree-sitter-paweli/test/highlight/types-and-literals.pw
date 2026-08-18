@@ -1,0 +1,49 @@
+struct
+Point
+// <- @type
+{
+	int
+	// <- @type.builtin
+	x
+	;
+	float
+	// <- @type.builtin
+	y
+	;
+}
+
+fn make
+(
+string
+// <- @type.builtin
+name,
+bool
+// <- @type.builtin
+ok)
+->
+Point
+// <- @type
+{
+	int n =
+	42
+	// <- @constant.numeric.integer
+	;
+	float f =
+	3.14
+	// <- @constant.numeric.float
+	;
+	bool b =
+	true
+	// <- @constant.builtin.boolean
+	;
+	string s =
+	null
+	// <- @constant.builtin
+	;
+	string
+	t
+	=
+	"ab\n"
+	// ^ @string.escape
+	;
+}

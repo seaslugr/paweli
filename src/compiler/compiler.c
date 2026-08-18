@@ -91,8 +91,8 @@ typedef struct compiler {
 	gc_heap_t *heap;
 	table_t *strings;
 	const char *filename;
-	/* Whole file's null-terminated text, kept only to render source
-	   snippets in diagnostics. compiler_t does not own it. */
+	// Whole file's null-terminated text, kept only to render source
+	// snippets in diagnostics. compiler_t does not own it.
 	const char *source;
 	bool had_error;
 	bool is_module_def;
@@ -108,8 +108,9 @@ typedef struct compiler {
 	// to whatever file imports it.
 	obj_module_t *home_module;
 	signature_table_t *out_exports;
-	// Non-NULL only when this file itself has a #module directive.
-	const module_unit_t *imported_module;
+	// Every #module import this file has, zero or more.
+	const module_unit_t *const *imported_modules;
+	size_t imported_module_count;
 
 	// This file's struct declarations, resolved before any signature or
 	// function body is compiled. File-local: not threaded through module
@@ -155,6 +156,21 @@ typedef struct compiler {
 	// (never read) for a parameter slot, which the JIT instead
 	// populates directly from frame->slots at function entry.
 	size_t local_reg_decl_end[MAX_LOCALS];
+	// Bytecode offset right after a register-eligible local's own
+	// scope-closing pop (end_scope()'s own comment on why only a real,
+	// permanent scope exit sets this, never a break/continue's
+	// temporary emit_pop_to_depth()). (size_t)-1 (the default, matching
+	// decl_end's own parameter sentinel) means the slot never explicitly
+	// closes before the function itself returns -- true for a
+	// parameter, and for any local declared directly in the function's
+	// own outermost scope. Meaningful only for a VAL_OBJ-typed binding:
+	// jit_compile.c's emit_gc_check() uses [decl_end, dead_at) as the
+	// bytecode-offset window during which this slot's memory is safe to
+	// flush a live register into, since outside that window the same
+	// address is ordinary operand-stack space that something else may
+	// already be using (see emit_gc_check()'s own comment for the two
+	// concrete failure shapes this guards against).
+	size_t local_reg_dead_at[MAX_LOCALS];
 	int local_slot_high_water;
 
 	// NULL for a top-level fn's own compiler_t (and for the file's
@@ -176,8 +192,8 @@ typedef struct compiler {
 static void ensure_native_signatures(void);
 
 static chunk_t *current_chunk(compiler_t *compiler);
-static void compiler_error(compiler_t *compiler, int line, int column, const char *code, const char *format, ...);
-static void compiler_warning(compiler_t *compiler, int line, int column, const char *code, const char *format, ...);
+static void compiler_error(compiler_t *compiler, int line, int column, int length, const char *code, const char *format, ...);
+static void compiler_warning(compiler_t *compiler, int line, int column, int length, const char *code, const char *format, ...);
 static void emit_byte(compiler_t *compiler, uint8_t byte, int line, int column);
 static void emit_bytes(compiler_t *compiler, uint8_t b1, uint8_t b2, int line, int column);
 static size_t emit_jump(compiler_t *compiler, uint8_t instruction, int line, int column);
@@ -192,8 +208,9 @@ static double parse_float_literal(token_t token);
 static void begin_scope(compiler_t *compiler);
 static void end_scope(compiler_t *compiler, int line, int column);
 static bool identifiers_equal(token_t a, token_t b);
-static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype);
+static bool register_cacheable_value_type(type_t type, value_type_t *out_vtype);
 static void note_local_reg_slot(compiler_t *compiler, int slot, type_t type);
+static void disqualify_local_reg_slot(compiler_t *compiler, int slot);
 static void finalize_local_reg_info(compiler_t *compiler);
 static bool add_local(compiler_t *compiler, token_t name, type_t type, int line);
 static bool declare_local(compiler_t *compiler, token_t name, type_t type, int line);
@@ -209,7 +226,8 @@ static token_t synthetic_token(const char *text);
 
 static type_t resolve_type_ref(compiler_t *compiler, type_ref_t type_ref, int line, int column);
 static void root_struct_namespace(compiler_t *compiler, const struct_def_t *def);
-static void register_structs(compiler_t *script_compiler, const ast_node_t *program, struct_registry_t *structs, const struct_registry_t *imported_structs);
+static void register_structs(compiler_t *script_compiler, const ast_node_t *program, struct_registry_t *structs, const module_unit_t *const *imported_modules, size_t imported_module_count);
+static const module_unit_t *find_imported_module(const module_unit_t *const *imported_modules, size_t imported_module_count, const char *name, size_t name_length);
 
 static void global_registry_init(global_registry_t *registry);
 static void global_registry_free(global_registry_t *registry);
@@ -221,8 +239,8 @@ static void apply_decorators(compiler_t *compiler, const ast_node_t *fn_node, si
 static void emit_test_runner(compiler_t *script, const ast_node_t *program, const signature_table_t *file_signatures);
 static signature_t **collect_signatures(compiler_t *script_compiler, const ast_node_t *program, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, table_t *file_globals, obj_module_t *home_module, signature_table_t *file_signatures);
 static void collect_struct_method_signatures(compiler_t *script_compiler, const ast_node_t *struct_node, struct_def_t *def, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, table_t *file_globals, obj_module_t *home_module);
-static void compile_function_decl(const ast_node_t *fn_node, const signature_t *sig, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, bool is_module_def, obj_module_t *home_module, signature_table_t *out_exports, signature_table_t *file_signatures, const module_unit_t *imported_module, const struct_registry_t *structs, const global_registry_t *globals, bool is_struct_method, bool *had_error);
-static void compile_struct_functions(const ast_node_t *struct_node, struct_def_t *def, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, bool is_module_def, obj_module_t *home_module, signature_table_t *out_exports, signature_table_t *file_signatures, const module_unit_t *imported_module, const struct_registry_t *structs, const global_registry_t *globals, bool *had_error);
+static void compile_function_decl(const ast_node_t *fn_node, const signature_t *sig, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, bool is_module_def, obj_module_t *home_module, signature_table_t *out_exports, signature_table_t *file_signatures, const module_unit_t *const *imported_modules, size_t imported_module_count, const struct_registry_t *structs, const global_registry_t *globals, bool is_struct_method, bool *had_error);
+static void compile_struct_functions(const ast_node_t *struct_node, struct_def_t *def, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, bool is_module_def, obj_module_t *home_module, signature_table_t *out_exports, signature_table_t *file_signatures, const module_unit_t *const *imported_modules, size_t imported_module_count, const struct_registry_t *structs, const global_registry_t *globals, bool *had_error);
 static void compile_nested_function_decl(compiler_t *compiler, const ast_node_t *node);
 static void emit_closure(compiler_t *compiler, obj_function_t *function, compiler_t *inner, int line, int column);
 static void compile_closure_body(compiler_t *compiler, const ast_list_t *params, ast_node_t *body, type_t *param_types, size_t param_count, type_t return_type, bool has_return_type, token_t function_name, int line, int column);
@@ -267,13 +285,13 @@ static type_t compile_call_expr(compiler_t *compiler, const ast_node_t *node);
 static type_t compile_bare_call(compiler_t *compiler, const ast_node_t *node, token_t name);
 static type_t compile_member_call(compiler_t *compiler, const ast_node_t *node);
 static type_t compile_stdlib_call(compiler_t *compiler, const ast_node_t *node, token_t member_name);
-static type_t compile_module_call(compiler_t *compiler, const ast_node_t *node, token_t member_name);
+static type_t compile_module_call(compiler_t *compiler, const ast_node_t *node, token_t member_name, const module_unit_t *module);
 static type_t compile_struct_call(compiler_t *compiler, const ast_node_t *node, const struct_def_t *def, token_t member_name);
 static type_t compile_length_call(compiler_t *compiler, const ast_node_t *node);
 static type_t compile_push_call(compiler_t *compiler, const ast_node_t *node);
 static type_t compile_pop_call(compiler_t *compiler, const ast_node_t *node);
 static type_t compile_sort_call(compiler_t *compiler, const ast_node_t *node);
-static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t *table, const char *name, size_t name_length, const ast_node_t *call_node, uint8_t patch_opcode, bool use_mangled_name, const char *prefix_name, size_t prefix_name_length, obj_t *prefix_constant);
+static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t *table, const char *name, size_t name_length, int name_line, int name_column, const ast_node_t *call_node, uint8_t patch_opcode, bool use_mangled_name, const char *prefix_name, size_t prefix_name_length, obj_t *prefix_constant);
 
 static void ensure_native_signatures(void) {
 	if (g_native_signatures_ready) {
@@ -300,7 +318,7 @@ static chunk_t *current_chunk(compiler_t *compiler) {
 	return &compiler->function->chunk;
 }
 
-static void compiler_error(compiler_t *compiler, int line, int column, const char *code, const char *format, ...) {
+static void compiler_error(compiler_t *compiler, int line, int column, int length, const char *code, const char *format, ...) {
 	va_list args;
 	char message[512];
 
@@ -308,7 +326,7 @@ static void compiler_error(compiler_t *compiler, int line, int column, const cha
 	vsnprintf(message, sizeof(message), format, args);
 	va_end(args);
 
-	diagnostic_emit(DIAG_ERROR, code, compiler->filename, compiler->source, line, column, "%s", message);
+	diagnostic_emit(DIAG_ERROR, code, compiler->filename, compiler->source, line, column, length, "%s", message);
 	compiler->had_error = true;
 }
 
@@ -316,7 +334,7 @@ static void compiler_error(compiler_t *compiler, int line, int column, const cha
    `compiler->had_error = true`, since a warning never fails compilation.
    Used by @deprecated (compile-time only; nothing here is ever checked
    against runtime state). */
-static void compiler_warning(compiler_t *compiler, int line, int column, const char *code, const char *format, ...) {
+static void compiler_warning(compiler_t *compiler, int line, int column, int length, const char *code, const char *format, ...) {
 	va_list args;
 	char message[512];
 
@@ -324,7 +342,7 @@ static void compiler_warning(compiler_t *compiler, int line, int column, const c
 	vsnprintf(message, sizeof(message), format, args);
 	va_end(args);
 
-	diagnostic_emit(DIAG_WARNING, code, compiler->filename, compiler->source, line, column, "%s", message);
+	diagnostic_emit(DIAG_WARNING, code, compiler->filename, compiler->source, line, column, length, "%s", message);
 }
 
 static void emit_byte(compiler_t *compiler, uint8_t byte, int line, int column) {
@@ -349,7 +367,7 @@ static void patch_jump(compiler_t *compiler, size_t offset, int line) {
 	jump = current_chunk(compiler)->count - offset - 2;
 
 	if (jump > UINT16_MAX) {
-		compiler_error(compiler, line, 0, "compiler::jump-too-large", "too much code to jump over");
+		compiler_error(compiler, line, 0, 0, "compiler::jump-too-large", "too much code to jump over");
 		return;
 	}
 
@@ -367,7 +385,7 @@ static void emit_loop(compiler_t *compiler, size_t loop_start, int line, int col
 	jump = offset - loop_start;
 
 	if (jump > UINT16_MAX) {
-		compiler_error(compiler, line, 0, "compiler::loop-too-large", "loop body too large");
+		compiler_error(compiler, line, 0, 0, "compiler::loop-too-large", "loop body too large");
 		jump = 0;
 	}
 
@@ -379,12 +397,13 @@ static void emit_constant(compiler_t *compiler, value_t value, int line, int col
 	size_t index;
 
 	index = chunk_add_constant(current_chunk(compiler), value);
-	if (index > UINT8_MAX) {
-		compiler_error(compiler, line, 0, "compiler::too-many-constants", "too many constants in one function");
+	if (index > UINT16_MAX) {
+		compiler_error(compiler, line, 0, 0, "compiler::too-many-constants", "too many constants in one function");
 		return;
 	}
 
-	emit_bytes(compiler, OP_CONSTANT, (uint8_t)index, line, column);
+	emit_byte(compiler, OP_CONSTANT, line, column);
+	emit_bytes(compiler, (uint8_t)((index >> 8) & 0xff), (uint8_t)(index & 0xff), line, column);
 }
 
 static void emit_name_op_str(compiler_t *compiler, uint8_t opcode, const char *name, size_t length, int line, int column) {
@@ -393,12 +412,13 @@ static void emit_name_op_str(compiler_t *compiler, uint8_t opcode, const char *n
 
 	string = object_new_string(compiler->heap, compiler->strings, name, length);
 	index = chunk_add_constant(current_chunk(compiler), value_obj((obj_t *)string));
-	if (index > UINT8_MAX) {
-		compiler_error(compiler, line, 0, "compiler::too-many-constants", "too many constants in one function");
+	if (index > UINT16_MAX) {
+		compiler_error(compiler, line, 0, 0, "compiler::too-many-constants", "too many constants in one function");
 		return;
 	}
 
-	emit_bytes(compiler, opcode, (uint8_t)index, line, column);
+	emit_byte(compiler, opcode, line, column);
+	emit_bytes(compiler, (uint8_t)((index >> 8) & 0xff), (uint8_t)(index & 0xff), line, column);
 }
 
 /* Reserves a fixed-size opcode+operand pair now, before the operand's
@@ -415,12 +435,13 @@ static void patch_name_op(compiler_t *compiler, size_t offset, const char *name,
 
 	string = object_new_string(compiler->heap, compiler->strings, name, length);
 	index = chunk_add_constant(current_chunk(compiler), value_obj((obj_t *)string));
-	if (index > UINT8_MAX) {
-		compiler_error(compiler, line, column, "compiler::too-many-constants", "too many constants in one function");
+	if (index > UINT16_MAX) {
+		compiler_error(compiler, line, column, 0, "compiler::too-many-constants", "too many constants in one function");
 		return;
 	}
 
-	current_chunk(compiler)->code[offset + 1] = (uint8_t)index;
+	current_chunk(compiler)->code[offset + 1] = (uint8_t)((index >> 8) & 0xff);
+	current_chunk(compiler)->code[offset + 2] = (uint8_t)(index & 0xff);
 }
 
 /* Token text is not null-terminated. The character right after it is not
@@ -455,6 +476,8 @@ static void begin_scope(compiler_t *compiler) {
 }
 
 static void end_scope(compiler_t *compiler, int line, int column) {
+	int slot;
+
 	compiler->scope_depth--;
 
 	while (compiler->local_count > 0 && compiler->locals[compiler->local_count - 1].depth > compiler->scope_depth) {
@@ -462,6 +485,15 @@ static void end_scope(compiler_t *compiler, int line, int column) {
 			emit_byte(compiler, OP_CLOSE_UPVALUE, line, column);
 		} else {
 			emit_byte(compiler, OP_POP, line, column);
+		}
+		// This slot's own memory stops being safe for emit_gc_check()
+		// to flush a bound register into once its scope has genuinely
+		// closed (as opposed to emit_pop_to_depth()'s break/continue
+		// pop, which doesn't reach here since the scope isn't really
+		// over on that path). See local_reg_dead_at's own comment.
+		slot = compiler->local_count - 1;
+		if (compiler->local_reg_eligible[slot]) {
+			compiler->local_reg_dead_at[slot] = current_chunk(compiler)->count;
 		}
 		compiler->local_count--;
 	}
@@ -475,13 +507,19 @@ static bool identifiers_equal(token_t a, token_t b) {
 }
 
 /* type qualifies for JIT register allocation (src/jit/jit_compile.c) iff
-   it's a scalar int/float/bool. An `int[]` local is a heap-allocated
-   obj_array_t* at runtime (VAL_OBJ), despite kind == TYPE_INT, hence the
-   array_depth check. On success, writes the matching runtime tag through
+   it's int/float/bool (VAL_INT/VAL_FLOAT/VAL_BOOL, a scalar payload with
+   a fixed, permanently-baked tag), or string/struct/closure/any array
+   (VAL_OBJ, a heap pointer whose logical tag src/jit/jit_compile.c's
+   emit_op_get_local() reconstructs at runtime from the payload: 0 means
+   null, nonzero means a real object -- see that function's own comment).
+   An `int[]` local is a heap-allocated obj_array_t* at runtime despite
+   kind == TYPE_INT, hence the array_depth check running before the
+   switch. On success, writes the matching runtime tag through
    out_vtype and returns true. */
-static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype) {
+static bool register_cacheable_value_type(type_t type, value_type_t *out_vtype) {
 	if (type.array_depth > 0) {
-		return false;
+		*out_vtype = VAL_OBJ;
+		return true;
 	}
 	switch (type.kind) {
 		case TYPE_INT:
@@ -493,6 +531,11 @@ static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype) {
 		case TYPE_BOOL:
 			*out_vtype = VAL_BOOL;
 			return true;
+		case TYPE_STRING:
+		case TYPE_STRUCT:
+		case TYPE_FUNCTION:
+			*out_vtype = VAL_OBJ;
+			return true;
 		default:
 			return false;
 	}
@@ -501,7 +544,7 @@ static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype) {
 /* Updates slot's register-eligibility as a new local_t claims it (see
    compiler_t's own comment on local_reg_seen/eligible/types/decl_end
    for why this is tracked separately from locals[] itself). A slot is
-   eligible only if it's numeric-scalar-typed AND claimed by exactly
+   eligible only if it's register-cacheable-typed AND claimed by exactly
    one local_t for the entire function: a *second* declaration reusing
    the same slot index (a sibling scope, after the first one closed)
    disqualifies it unconditionally, even if the type would have
@@ -509,20 +552,23 @@ static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype) {
    "types agree" because the JIT's own local_reg_decl_end mechanism
    (see compiler_t's comment on it) can only ever record one
    declaration point per slot; a second one would be silently
-   ignored, which numeric type-matching alone wouldn't catch. Once
-   disqualified, a slot never becomes eligible again. */
+   ignored, which type-matching alone wouldn't catch. Once
+   disqualified, a slot never becomes eligible again (see also
+   disqualify_local_reg_slot() below, the other way a slot loses
+   eligibility after already being seen). */
 static void note_local_reg_slot(compiler_t *compiler, int slot, type_t type) {
 	value_type_t vtype;
-	bool numeric;
+	bool cacheable;
 
-	numeric = numeric_scalar_value_type(type, &vtype);
+	cacheable = register_cacheable_value_type(type, &vtype);
 
 	if (!compiler->local_reg_seen[slot]) {
 		compiler->local_reg_seen[slot] = true;
-		compiler->local_reg_eligible[slot] = numeric;
-		if (numeric) {
+		compiler->local_reg_eligible[slot] = cacheable;
+		if (cacheable) {
 			compiler->local_reg_types[slot] = vtype;
 			compiler->local_reg_decl_end[slot] = current_chunk(compiler)->count;
+			compiler->local_reg_dead_at[slot] = (size_t)-1;
 		}
 	} else {
 		compiler->local_reg_eligible[slot] = false;
@@ -531,6 +577,23 @@ static void note_local_reg_slot(compiler_t *compiler, int slot, type_t type) {
 	if (slot + 1 > compiler->local_slot_high_water) {
 		compiler->local_slot_high_water = slot + 1;
 	}
+}
+
+/* Revokes slot's register-eligibility outright, whether or not it was
+   ever eligible to begin with (harmless no-op if not). Used for a
+   scalar-typed slot the compiler can see a `null` literal ever flow
+   into (compile_var_decl()/compile_assign_expr(), whenever the
+   assigned value's static type is TYPE_NULL): unlike an object pointer,
+   a scalar's payload being 0 is ambiguous with the real value 0, so
+   there is no runtime sentinel available to reconstruct VAL_NULL the
+   way emit_op_get_local() does for VAL_OBJ. Falling back to this slot's
+   existing, already-correct memory-resident handling (a real VAL_NULL
+   tag written to memory, same as any other local) is simpler than
+   inventing a side channel. Only ever meaningful for a slot already
+   marked local_reg_seen; called before that is a no-op since
+   note_local_reg_slot() would just overwrite whatever this set. */
+static void disqualify_local_reg_slot(compiler_t *compiler, int slot) {
+	compiler->local_reg_eligible[slot] = false;
 }
 
 /* Copies compiler's per-slot register-eligibility table onto its own
@@ -554,10 +617,12 @@ static void finalize_local_reg_info(compiler_t *compiler) {
 	chunk->local_reg_eligible = malloc((size_t)count * sizeof(bool));
 	chunk->local_reg_types = malloc((size_t)count * sizeof(value_type_t));
 	chunk->local_reg_decl_end = malloc((size_t)count * sizeof(size_t));
+	chunk->local_reg_dead_at = malloc((size_t)count * sizeof(size_t));
 	for (i = 0; i < count; i++) {
 		chunk->local_reg_eligible[i] = compiler->local_reg_eligible[i];
 		chunk->local_reg_types[i] = compiler->local_reg_types[i];
 		chunk->local_reg_decl_end[i] = compiler->local_reg_decl_end[i];
+		chunk->local_reg_dead_at[i] = compiler->local_reg_dead_at[i];
 	}
 }
 
@@ -569,7 +634,7 @@ static bool add_local(compiler_t *compiler, token_t name, type_t type, int line)
 	local_t *local;
 
 	if (compiler->local_count >= MAX_LOCALS) {
-		compiler_error(compiler, line, name.column, "compiler::too-many-locals", "too many local variables in one function");
+		compiler_error(compiler, line, name.column, (int)name.length, "compiler::too-many-locals", "too many local variables in one function");
 		return false;
 	}
 
@@ -600,7 +665,7 @@ static bool declare_local(compiler_t *compiler, token_t name, type_t type, int l
 			break;
 		}
 		if (identifiers_equal(name, compiler->locals[i].name)) {
-			compiler_error(compiler, line, name.column, "compiler::duplicate-local", "a variable with this name already exists in this scope");
+			compiler_error(compiler, line, name.column, (int)name.length, "compiler::duplicate-local", "a variable with this name already exists in this scope");
 			return false;
 		}
 	}
@@ -618,7 +683,7 @@ static int resolve_local(compiler_t *compiler, token_t name) {
 	for (i = compiler->local_count - 1; i >= 0; i--) {
 		if (identifiers_equal(name, compiler->locals[i].name)) {
 			if (compiler->locals[i].depth == -1) {
-				compiler_error(compiler, name.line, name.column, "compiler::local-read-in-own-initializer", "cannot read a local variable in its own initializer");
+				compiler_error(compiler, name.line, name.column, (int)name.length, "compiler::local-read-in-own-initializer", "cannot read a local variable in its own initializer");
 			}
 			return i;
 		}
@@ -647,7 +712,7 @@ static int add_upvalue(compiler_t *compiler, uint8_t index, bool is_local, type_
 	}
 
 	if (upvalue_count == MAX_LOCALS) {
-		compiler_error(compiler, line, column, "compiler::too-many-upvalues", "too many upvalues captured in one function");
+		compiler_error(compiler, line, column, 0, "compiler::too-many-upvalues", "too many upvalues captured in one function");
 		return 0;
 	}
 
@@ -766,23 +831,44 @@ static token_t synthetic_token(const char *text) {
 	return token;
 }
 
-/* Resolves a type_ref_t against compiler->structs, falling back to
-   compiler->imported_module's exported structs (if this file has a
-   #module directive at all) when the name isn't declared locally,
-   reporting an "unknown type" error (and returning TYPE_VOID) if it
-   matches neither. Every call site that turns a type_ref_t into a
-   type_t goes through this instead of calling type_from_type_ref()
-   directly, so that error gets reported exactly once, at the position
-   that actually names the bad type. */
+/* Resolves a type_ref_t against compiler->structs, falling back to every
+   one of compiler->imported_modules' exported structs when the name
+   isn't declared locally, reporting an "unknown type" error (and
+   returning TYPE_VOID) if it matches none of them, or an
+   "ambiguous-struct-name" error (also TYPE_VOID) if it matches more than
+   one import's exports. Every call site that turns a type_ref_t into a
+   type_t and wants either error reported goes through this instead of
+   calling type_from_type_ref() directly, so that error gets reported
+   exactly once, at the position that actually names the bad type. */
 static type_t resolve_type_ref(compiler_t *compiler, type_ref_t type_ref, int line, int column) {
 	type_t type;
 	bool found;
+	bool ambiguous;
 
-	type = type_from_type_ref(type_ref, compiler->structs, compiler->imported_module != NULL ? compiler->imported_module->exported_structs : NULL, &found);
-	if (!found) {
-		compiler_error(compiler, line, column, "compiler::unknown-type", "unknown type '%.*s'", (int)type_ref.struct_name.length, type_ref.struct_name.start);
+	type = type_from_type_ref(type_ref, compiler->structs, compiler->imported_modules, compiler->imported_module_count, &found, &ambiguous);
+	if (ambiguous) {
+		compiler_error(compiler, line, column, (int)type_ref.struct_name.length, "compiler::ambiguous-struct-name", "'%.*s' is exported by more than one imported module", (int)type_ref.struct_name.length, type_ref.struct_name.start);
+	} else if (!found) {
+		compiler_error(compiler, line, column, (int)type_ref.struct_name.length, "compiler::unknown-type", "unknown type '%.*s'", (int)type_ref.struct_name.length, type_ref.struct_name.start);
 	}
 	return type;
+}
+
+/* Linear scan by local_name, the same lookup every call site that
+   dispatches on "is this identifier one of my imported modules" used to
+   duplicate as a direct equality check against a single module_unit_t*,
+   back when a file could have at most one #module import. NULL if name
+   does not match any of compiler->imported_modules. */
+static const module_unit_t *find_imported_module(const module_unit_t *const *imported_modules, size_t imported_module_count, const char *name, size_t name_length) {
+	size_t i;
+
+	for (i = 0; i < imported_module_count; i++) {
+		if (imported_modules[i]->local_name_length == name_length && memcmp(imported_modules[i]->local_name, name, name_length) == 0) {
+			return imported_modules[i];
+		}
+	}
+
+	return NULL;
 }
 
 /* Roots def->namespace_obj into this file's own globals table (already
@@ -818,9 +904,10 @@ static void root_struct_namespace(compiler_t *compiler, const struct_def_t *def)
    (like an array's elements), so a self- or mutually-recursive struct
    type is not a representation problem; the restriction here is only
    about keeping name resolution a single, simple top-to-bottom pass. */
-static void register_structs(compiler_t *script_compiler, const ast_node_t *program, struct_registry_t *structs, const struct_registry_t *imported_structs) {
+static void register_structs(compiler_t *script_compiler, const ast_node_t *program, struct_registry_t *structs, const module_unit_t *const *imported_modules, size_t imported_module_count) {
 	size_t i;
 	size_t f;
+	size_t m;
 	const ast_node_t *struct_node;
 	const ast_node_t *field_node;
 	struct_def_t *def;
@@ -833,7 +920,7 @@ static void register_structs(compiler_t *script_compiler, const ast_node_t *prog
 
 		def = struct_registry_add(structs, struct_node->as.struct_decl.name.start, struct_node->as.struct_decl.name.length, script_compiler->heap, script_compiler->strings);
 		if (def == NULL) {
-			compiler_error(script_compiler, struct_node->line, struct_node->column, "compiler::duplicate-struct", "'%.*s' is already declared as a struct", (int)struct_node->as.struct_decl.name.length, struct_node->as.struct_decl.name.start);
+			compiler_error(script_compiler, struct_node->as.struct_decl.name.line, struct_node->as.struct_decl.name.column, (int)struct_node->as.struct_decl.name.length, "compiler::duplicate-struct", "'%.*s' is already declared as a struct", (int)struct_node->as.struct_decl.name.length, struct_node->as.struct_decl.name.start);
 			continue;
 		}
 		root_struct_namespace(script_compiler, def);
@@ -842,11 +929,14 @@ static void register_structs(compiler_t *script_compiler, const ast_node_t *prog
 		// resolve_type_ref()), so a local struct sharing a name with an
 		// imported one would otherwise just silently win with no way to
 		// reach the other. Reject it outright instead, the same way
-		// two local structs sharing a name already is.
-		if (imported_structs != NULL) {
-			imported_def = struct_registry_find(imported_structs, struct_node->as.struct_decl.name.start, struct_node->as.struct_decl.name.length);
+		// two local structs sharing a name already is. Checked against
+		// every import, not just one: a local struct colliding with any
+		// of them is equally unreachable.
+		for (m = 0; m < imported_module_count; m++) {
+			imported_def = struct_registry_find(imported_modules[m]->exported_structs, struct_node->as.struct_decl.name.start, struct_node->as.struct_decl.name.length);
 			if (imported_def != NULL && imported_def->is_exported) {
-				compiler_error(script_compiler, struct_node->line, struct_node->column, "compiler::duplicate-struct", "'%.*s' is already declared as a struct", (int)struct_node->as.struct_decl.name.length, struct_node->as.struct_decl.name.start);
+				compiler_error(script_compiler, struct_node->as.struct_decl.name.line, struct_node->as.struct_decl.name.column, (int)struct_node->as.struct_decl.name.length, "compiler::duplicate-struct", "'%.*s' is already declared as a struct", (int)struct_node->as.struct_decl.name.length, struct_node->as.struct_decl.name.start);
+				break;
 			}
 		}
 
@@ -936,21 +1026,11 @@ static void register_globals(compiler_t *script_compiler, const ast_node_t *prog
 		declared_type = resolve_type_ref(script_compiler, global_node->as.var_decl.type, global_node->line, global_node->column);
 
 		if (!global_registry_add(globals, global_node->as.var_decl.name.start, global_node->as.var_decl.name.length, declared_type, global_node->line, global_node->column)) {
-			compiler_error(script_compiler, global_node->line, global_node->column, "compiler::duplicate-global", "'%.*s' is already declared as a global variable", (int)global_node->as.var_decl.name.length, global_node->as.var_decl.name.start);
+			compiler_error(script_compiler, global_node->as.var_decl.name.line, global_node->as.var_decl.name.column, (int)global_node->as.var_decl.name.length, "compiler::duplicate-global", "'%.*s' is already declared as a global variable", (int)global_node->as.var_decl.name.length, global_node->as.var_decl.name.start);
 		}
 	}
 }
 
-/* Pass 1: parses every top-level fn's signature (name, param types,
-   return type) and allocates its (still empty) obj_function_t, without
-   touching any body. This is what makes forward references, recursion,
-   and overload resolution across declaration order all work: by the
-   time pass 2 compiles any function's body, every sibling's signature
-   already exists to resolve calls against. Returns one signature_t* per
-   entry in program->as.program.functions, in the same order (NULL for
-   an entry whose signature was a duplicate and so never got a
-   function); the caller owns the returned array (not what it points
-   to, that stays owned by file_signatures). */
 /* Walks fn_node's decorator list (only ever non-empty for a top-level
    fn, since parse_statement() never looks for a leading '@', so a nested
    fn's own list is always empty) and applies each known name onto sig.
@@ -969,10 +1049,10 @@ static void apply_decorators(compiler_t *compiler, const ast_node_t *fn_node, si
 
 		if (dname.length == 4 && memcmp(dname.start, "test", 4) == 0) {
 			if (decorator_node->as.decorator.arg != NULL) {
-				compiler_error(compiler, decorator_node->line, decorator_node->column, "compiler::decorator-takes-no-argument", "'@test' does not take an argument");
+				compiler_error(compiler, decorator_node->line, decorator_node->column, 0, "compiler::decorator-takes-no-argument", "'@test' does not take an argument");
 			}
 			if (param_count != 0) {
-				compiler_error(compiler, fn_node->line, fn_node->column, "compiler::test-function-must-have-no-parameters", "a '@test' function must take no parameters");
+				compiler_error(compiler, fn_node->line, fn_node->column, 0, "compiler::test-function-must-have-no-parameters", "a '@test' function must take no parameters");
 			}
 		} else if (dname.length == 10 && memcmp(dname.start, "deprecated", 10) == 0) {
 			sig->is_deprecated = true;
@@ -985,11 +1065,21 @@ static void apply_decorators(compiler_t *compiler, const ast_node_t *fn_node, si
 				sig->deprecated_message_length = 0;
 			}
 		} else {
-			compiler_error(compiler, decorator_node->line, decorator_node->column, "compiler::unknown-decorator", "unknown decorator '@%.*s'", (int)dname.length, dname.start);
+			compiler_error(compiler, decorator_node->line, decorator_node->column, (int)dname.length + 1, "compiler::unknown-decorator", "unknown decorator '@%.*s'", (int)dname.length, dname.start);
 		}
 	}
 }
 
+/* Pass 1: parses every top-level fn's signature (name, param types,
+   return type) and allocates its (still empty) obj_function_t, without
+   touching any body. This is what makes forward references, recursion,
+   and overload resolution across declaration order all work: by the
+   time pass 2 compiles any function's body, every sibling's signature
+   already exists to resolve calls against. Returns one signature_t* per
+   entry in program->as.program.functions, in the same order (NULL for
+   an entry whose signature was a duplicate and so never got a
+   function); the caller owns the returned array (not what it points
+   to, that stays owned by file_signatures). */
 static signature_t **collect_signatures(compiler_t *script_compiler, const ast_node_t *program, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, table_t *file_globals, obj_module_t *home_module, signature_table_t *file_signatures) {
 	signature_t **signatures;
 	bool *accepted;
@@ -1031,7 +1121,7 @@ static signature_t **collect_signatures(compiler_t *script_compiler, const ast_n
 		}
 
 		if (param_count > UINT8_MAX) {
-			compiler_error(script_compiler, fn_node->line, fn_node->column, "compiler::too-many-parameters", "a function can have at most 255 parameters");
+			compiler_error(script_compiler, fn_node->line, fn_node->column, 0, "compiler::too-many-parameters", "a function can have at most 255 parameters");
 		}
 
 		has_return_type = fn_node->as.function_decl.has_return_type;
@@ -1041,7 +1131,7 @@ static signature_t **collect_signatures(compiler_t *script_compiler, const ast_n
 		free(param_types);
 
 		if (!accepted[i]) {
-			compiler_error(script_compiler, fn_node->line, fn_node->column, "compiler::duplicate-signature", "'%.*s' is already declared with this parameter list", (int)fn_node->as.function_decl.name.length, fn_node->as.function_decl.name.start);
+			compiler_error(script_compiler, fn_node->as.function_decl.name.line, fn_node->as.function_decl.name.column, (int)fn_node->as.function_decl.name.length, "compiler::duplicate-signature", "'%.*s' is already declared with this parameter list", (int)fn_node->as.function_decl.name.length, fn_node->as.function_decl.name.start);
 		}
 	}
 
@@ -1060,7 +1150,7 @@ static signature_t **collect_signatures(compiler_t *script_compiler, const ast_n
 			// above; NULL here avoids reporting the same "unknown type"
 			// error twice for an accepted signature.
 			param_node = fn_node->as.function_decl.params.items[p];
-			param_types[p] = type_from_type_ref(param_node->as.param.type, script_compiler->structs, script_compiler->imported_module != NULL ? script_compiler->imported_module->exported_structs : NULL, NULL);
+			param_types[p] = type_from_type_ref(param_node->as.param.type, script_compiler->structs, script_compiler->imported_modules, script_compiler->imported_module_count, NULL, NULL);
 		}
 
 		signature_table_resolve(file_signatures, fn_node->as.function_decl.name.start, fn_node->as.function_decl.name.length, param_types, param_count, &sig);
@@ -1128,7 +1218,7 @@ static void collect_struct_method_signatures(compiler_t *script_compiler, const 
 		}
 
 		if (param_count > UINT8_MAX) {
-			compiler_error(script_compiler, fn_node->line, fn_node->column, "compiler::too-many-parameters", "a function can have at most 255 parameters");
+			compiler_error(script_compiler, fn_node->line, fn_node->column, 0, "compiler::too-many-parameters", "a function can have at most 255 parameters");
 		}
 
 		has_return_type = fn_node->as.function_decl.has_return_type;
@@ -1138,7 +1228,7 @@ static void collect_struct_method_signatures(compiler_t *script_compiler, const 
 		free(param_types);
 
 		if (!accepted[i]) {
-			compiler_error(script_compiler, fn_node->line, fn_node->column, "compiler::duplicate-signature", "'%.*s.%.*s' is already declared with this parameter list", (int)def->name_length, def->name, (int)fn_node->as.function_decl.name.length, fn_node->as.function_decl.name.start);
+			compiler_error(script_compiler, fn_node->as.function_decl.name.line, fn_node->as.function_decl.name.column, (int)fn_node->as.function_decl.name.length, "compiler::duplicate-signature", "'%.*s.%.*s' is already declared with this parameter list", (int)def->name_length, def->name, (int)fn_node->as.function_decl.name.length, fn_node->as.function_decl.name.start);
 		}
 	}
 
@@ -1156,7 +1246,7 @@ static void collect_struct_method_signatures(compiler_t *script_compiler, const 
 			// above; NULL here avoids reporting the same "unknown type"
 			// error twice for an accepted signature.
 			param_node = fn_node->as.function_decl.params.items[p];
-			param_types[p] = type_from_type_ref(param_node->as.param.type, script_compiler->structs, script_compiler->imported_module != NULL ? script_compiler->imported_module->exported_structs : NULL, NULL);
+			param_types[p] = type_from_type_ref(param_node->as.param.type, script_compiler->structs, script_compiler->imported_modules, script_compiler->imported_module_count, NULL, NULL);
 		}
 
 		signature_table_resolve(def->methods, fn_node->as.function_decl.name.start, fn_node->as.function_decl.name.length, param_types, param_count, &sig);
@@ -1183,7 +1273,7 @@ static void collect_struct_method_signatures(compiler_t *script_compiler, const 
 	free(accepted);
 }
 
-static void compile_function_decl(const ast_node_t *fn_node, const signature_t *sig, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, bool is_module_def, obj_module_t *home_module, signature_table_t *out_exports, signature_table_t *file_signatures, const module_unit_t *imported_module, const struct_registry_t *structs, const global_registry_t *globals, bool is_struct_method, bool *had_error) {
+static void compile_function_decl(const ast_node_t *fn_node, const signature_t *sig, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, bool is_module_def, obj_module_t *home_module, signature_table_t *out_exports, signature_table_t *file_signatures, const module_unit_t *const *imported_modules, size_t imported_module_count, const struct_registry_t *structs, const global_registry_t *globals, bool is_struct_method, bool *had_error) {
 	compiler_t compiler;
 	size_t i;
 	const ast_node_t *param;
@@ -1206,7 +1296,8 @@ static void compile_function_decl(const ast_node_t *fn_node, const signature_t *
 	compiler.file_signatures = file_signatures;
 	compiler.home_module = home_module;
 	compiler.out_exports = out_exports;
-	compiler.imported_module = imported_module;
+	compiler.imported_modules = imported_modules;
+	compiler.imported_module_count = imported_module_count;
 	compiler.structs = structs;
 	compiler.globals = globals;
 	compiler.local_count = 0;
@@ -1214,6 +1305,7 @@ static void compile_function_decl(const ast_node_t *fn_node, const signature_t *
 	memset(compiler.local_reg_seen, 0, sizeof(compiler.local_reg_seen));
 	memset(compiler.local_reg_eligible, 0, sizeof(compiler.local_reg_eligible));
 	memset(compiler.local_reg_decl_end, 0, sizeof(compiler.local_reg_decl_end));
+	memset(compiler.local_reg_dead_at, 0, sizeof(compiler.local_reg_dead_at));
 	compiler.local_slot_high_water = 0;
 	// A top-level fn has no enclosing scope: nothing to capture, ever.
 	compiler.enclosing = NULL;
@@ -1228,7 +1320,7 @@ static void compile_function_decl(const ast_node_t *fn_node, const signature_t *
 		param = fn_node->as.function_decl.params.items[i];
 		// Already validated (and any error reported) during signature
 		// collection; NULL avoids a duplicate "unknown type" report.
-		if (declare_local(&compiler, param->as.param.name, type_from_type_ref(param->as.param.type, compiler.structs, compiler.imported_module != NULL ? compiler.imported_module->exported_structs : NULL, NULL), param->line)) {
+		if (declare_local(&compiler, param->as.param.name, type_from_type_ref(param->as.param.type, compiler.structs, compiler.imported_modules, compiler.imported_module_count, NULL, NULL), param->line)) {
 			mark_initialized(&compiler);
 		}
 	}
@@ -1268,7 +1360,7 @@ static void compile_function_decl(const ast_node_t *fn_node, const signature_t *
    has resolved every struct's method signatures (across every struct in
    the file, not just this one), needed so one struct's method body can
    call another struct's, or its own, regardless of declaration order. */
-static void compile_struct_functions(const ast_node_t *struct_node, struct_def_t *def, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, bool is_module_def, obj_module_t *home_module, signature_table_t *out_exports, signature_table_t *file_signatures, const module_unit_t *imported_module, const struct_registry_t *structs, const global_registry_t *globals, bool *had_error) {
+static void compile_struct_functions(const ast_node_t *struct_node, struct_def_t *def, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, bool is_module_def, obj_module_t *home_module, signature_table_t *out_exports, signature_table_t *file_signatures, const module_unit_t *const *imported_modules, size_t imported_module_count, const struct_registry_t *structs, const global_registry_t *globals, bool *had_error) {
 	size_t i;
 	size_t p;
 	const ast_node_t *fn_node;
@@ -1286,7 +1378,7 @@ static void compile_struct_functions(const ast_node_t *struct_node, struct_def_t
 		param_types = param_count > 0 ? malloc(param_count * sizeof(type_t)) : NULL;
 		for (p = 0; p < param_count; p++) {
 			param_node = fn_node->as.function_decl.params.items[p];
-			param_types[p] = type_from_type_ref(param_node->as.param.type, structs, imported_module != NULL ? imported_module->exported_structs : NULL, NULL);
+			param_types[p] = type_from_type_ref(param_node->as.param.type, structs, imported_modules, imported_module_count, NULL, NULL);
 		}
 
 		match = signature_table_resolve(def->methods, fn_node->as.function_decl.name.start, fn_node->as.function_decl.name.length, param_types, param_count, &sig);
@@ -1299,7 +1391,7 @@ static void compile_struct_functions(const ast_node_t *struct_node, struct_def_t
 			continue;
 		}
 
-		compile_function_decl(fn_node, sig, heap, strings, filename, source, is_module_def, home_module, out_exports, file_signatures, imported_module, structs, globals, true, had_error);
+		compile_function_decl(fn_node, sig, heap, strings, filename, source, is_module_def, home_module, out_exports, file_signatures, imported_modules, imported_module_count, structs, globals, true, had_error);
 
 		key = object_new_string(heap, strings, sig->mangled_name, strlen(sig->mangled_name));
 		table_set(def->namespace_obj->members, key, value_obj((obj_t *)sig->function));
@@ -1317,17 +1409,17 @@ static void emit_closure(compiler_t *compiler, obj_function_t *function, compile
 	int i;
 
 	const_index = chunk_add_constant(current_chunk(compiler), value_obj((obj_t *)function));
-	if (const_index > UINT8_MAX) {
-		compiler_error(compiler, line, column, "compiler::too-many-constants", "too many constants in one function");
+	if (const_index > UINT16_MAX) {
+		compiler_error(compiler, line, column, 0, "compiler::too-many-constants", "too many constants in one function");
 		return;
 	}
 	if (inner->upvalue_count > UINT8_MAX) {
-		compiler_error(compiler, line, column, "compiler::too-many-upvalues", "too many upvalues captured in one function");
+		compiler_error(compiler, line, column, 0, "compiler::too-many-upvalues", "too many upvalues captured in one function");
 		return;
 	}
 
 	emit_byte(compiler, OP_CLOSURE, line, column);
-	emit_byte(compiler, (uint8_t)const_index, line, column);
+	emit_bytes(compiler, (uint8_t)((const_index >> 8) & 0xff), (uint8_t)(const_index & 0xff), line, column);
 	emit_byte(compiler, (uint8_t)inner->upvalue_count, line, column);
 	for (i = 0; i < inner->upvalue_count; i++) {
 		emit_byte(compiler, inner->upvalues[i].is_local ? 1 : 0, line, column);
@@ -1377,7 +1469,8 @@ static void compile_closure_body(compiler_t *compiler, const ast_list_t *params,
 	inner.file_signatures = compiler->file_signatures;
 	inner.home_module = compiler->home_module;
 	inner.out_exports = compiler->out_exports;
-	inner.imported_module = compiler->imported_module;
+	inner.imported_modules = compiler->imported_modules;
+	inner.imported_module_count = compiler->imported_module_count;
 	inner.structs = compiler->structs;
 	inner.globals = compiler->globals;
 	inner.local_count = 0;
@@ -1385,6 +1478,7 @@ static void compile_closure_body(compiler_t *compiler, const ast_list_t *params,
 	memset(inner.local_reg_seen, 0, sizeof(inner.local_reg_seen));
 	memset(inner.local_reg_eligible, 0, sizeof(inner.local_reg_eligible));
 	memset(inner.local_reg_decl_end, 0, sizeof(inner.local_reg_decl_end));
+	memset(inner.local_reg_dead_at, 0, sizeof(inner.local_reg_dead_at));
 	inner.local_slot_high_water = 0;
 	inner.enclosing = compiler;
 	inner.upvalue_count = 0;
@@ -1452,7 +1546,7 @@ static void compile_nested_function_decl(compiler_t *compiler, const ast_node_t 
 	}
 
 	if (param_count > UINT8_MAX) {
-		compiler_error(compiler, node->line, node->column, "compiler::too-many-parameters", "a function can have at most 255 parameters");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::too-many-parameters", "a function can have at most 255 parameters");
 	}
 
 	has_return_type = node->as.function_decl.has_return_type;
@@ -1466,11 +1560,31 @@ static void compile_nested_function_decl(compiler_t *compiler, const ast_node_t 
 
 	fn_type = type_function(ft);
 
-	if (declare_local(compiler, name, fn_type, node->line)) {
-		mark_initialized(compiler);
-	}
+	{
+		int slot = -1;
 
-	compile_closure_body(compiler, &node->as.function_decl.params, node->as.function_decl.body, param_types, param_count, return_type, has_return_type, name, node->line, node->column);
+		if (declare_local(compiler, name, fn_type, node->line)) {
+			slot = compiler->local_count - 1;
+			mark_initialized(compiler);
+		}
+
+		// Unlike a plain compile_var_decl(), this local is declared
+		// (for self-recursion) BEFORE its own OP_CLOSURE has even been
+		// emitted, so note_local_reg_slot() (inside declare_local()
+		// above) recorded local_reg_decl_end[slot] too early -- right
+		// before OP_CLOSURE, not right after. Harmless while a
+		// TYPE_FUNCTION local could never be register-eligible, but
+		// now that it can be, a stale decl_end there would make the
+		// JIT sync this slot's bound register from whatever was on the
+		// stack *before* the closure was actually built. Corrected
+		// here, after the fact, once OP_CLOSURE has genuinely been
+		// emitted into this chunk.
+		compile_closure_body(compiler, &node->as.function_decl.params, node->as.function_decl.body, param_types, param_count, return_type, has_return_type, name, node->line, node->column);
+
+		if (slot >= 0 && compiler->local_reg_eligible[slot]) {
+			compiler->local_reg_decl_end[slot] = current_chunk(compiler)->count;
+		}
+	}
 }
 
 /* `fn(TYPE NAME, ...) -> TYPE { ... }` in expression position (parsed by
@@ -1501,7 +1615,7 @@ static type_t compile_lambda_expr(compiler_t *compiler, const ast_node_t *node) 
 	}
 
 	if (param_count > UINT8_MAX) {
-		compiler_error(compiler, node->line, node->column, "compiler::too-many-parameters", "a function can have at most 255 parameters");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::too-many-parameters", "a function can have at most 255 parameters");
 	}
 
 	has_return_type = node->as.function_decl.has_return_type;
@@ -1583,7 +1697,7 @@ static type_t compile_try_expr(compiler_t *compiler, const ast_node_t *node) {
 	if (node->as.try_expr.has_binding) {
 		binding_type = resolve_type_ref(compiler, node->as.try_expr.binding_type, node->line, node->column);
 		if (!type_equals(binding_type, type_string())) {
-			compiler_error(compiler, node->line, node->column, "compiler::catch-binding-must-be-string", "a caught error is always a string; declare the binding as 'string'");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::catch-binding-must-be-string", "a caught error is always a string; declare the binding as 'string'");
 		}
 		if (declare_local(compiler, node->as.try_expr.binding_name, type_string(), node->line)) {
 			mark_initialized(compiler);
@@ -1601,7 +1715,7 @@ static type_t compile_try_expr(compiler_t *compiler, const ast_node_t *node) {
 	if (node->as.try_expr.has_fallback) {
 		fallback_actual_type = compile_expr_typed(compiler, node->as.try_expr.fallback_expr, &fallback_type);
 		if (!type_is_assignable(fallback_type, fallback_actual_type)) {
-			compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "catch's fallback must be %s, got %s", type_to_string(fallback_type), type_to_string(fallback_actual_type));
+			compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "catch's fallback must be %s, got %s", type_to_string(fallback_type), type_to_string(fallback_actual_type));
 		}
 	} else {
 		emit_byte(compiler, OP_NULL, node->line, node->column);
@@ -1617,7 +1731,7 @@ static void compile_throw_stmt(compiler_t *compiler, const ast_node_t *node) {
 
 	value_type = compile_expr_typed(compiler, node->as.throw_stmt.value, NULL);
 	if (!type_equals(value_type, type_string())) {
-		compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "throw expects a string, got %s", type_to_string(value_type));
+		compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "throw expects a string, got %s", type_to_string(value_type));
 	}
 
 	emit_byte(compiler, OP_THROW, node->line, node->column);
@@ -1690,7 +1804,7 @@ static void compile_statement(compiler_t *compiler, const ast_node_t *node) {
 			compile_block_stmt(compiler, node);
 			break;
 		default:
-			compiler_error(compiler, node->line, node->column, "compiler::unsupported-statement", "expected a statement");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::unsupported-statement", "expected a statement");
 			break;
 	}
 }
@@ -1703,11 +1817,18 @@ static void compile_var_decl(compiler_t *compiler, const ast_node_t *node) {
 	initializer_type = compile_expr_typed(compiler, node->as.var_decl.initializer, &declared_type);
 
 	if (!type_is_assignable(declared_type, initializer_type)) {
-		compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot initialize a %s variable with a %s value", type_to_string(declared_type), type_to_string(initializer_type));
+		compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "cannot initialize a %s variable with a %s value", type_to_string(declared_type), type_to_string(initializer_type));
 	}
 
 	if (declare_local(compiler, node->as.var_decl.name, declared_type, node->line)) {
 		mark_initialized(compiler);
+		if (initializer_type.kind == TYPE_NULL) {
+			value_type_t vtype;
+
+			if (register_cacheable_value_type(declared_type, &vtype) && vtype != VAL_OBJ) {
+				disqualify_local_reg_slot(compiler, compiler->local_count - 1);
+			}
+		}
 	}
 }
 
@@ -1727,12 +1848,12 @@ static void compile_export_stmt(compiler_t *compiler, const ast_node_t *node) {
 	struct_def_t *struct_def;
 
 	if (!compiler->is_module_def) {
-		compiler_error(compiler, node->line, node->column, "compiler::export-outside-module", "'export' can only be used in a file with a #moduledef directive");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::export-outside-module", "'export' can only be used in a file with a #moduledef directive");
 		return;
 	}
 
 	if (!compiler->compiling_main || compiler->scope_depth != 1) {
-		compiler_error(compiler, node->line, node->column, "compiler::export-must-be-unconditional", "'export' must be a direct statement in main(), not nested in a conditional or loop");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::export-must-be-unconditional", "'export' must be a direct statement in main(), not nested in a conditional or loop");
 		return;
 	}
 
@@ -1745,7 +1866,7 @@ static void compile_export_stmt(compiler_t *compiler, const ast_node_t *node) {
 		// runs anything, matching how this whole statement works.
 		struct_def = struct_registry_find(compiler->structs, node->as.export_stmt.name.start, node->as.export_stmt.name.length);
 		if (struct_def == NULL) {
-			compiler_error(compiler, node->line, node->column, "compiler::undefined-variable", "cannot export undefined name '%.*s'", (int)node->as.export_stmt.name.length, node->as.export_stmt.name.start);
+			compiler_error(compiler, node->as.export_stmt.name.line, node->as.export_stmt.name.column, (int)node->as.export_stmt.name.length, "compiler::undefined-variable", "cannot export undefined name '%.*s'", (int)node->as.export_stmt.name.length, node->as.export_stmt.name.start);
 			return;
 		}
 		struct_def->is_exported = true;
@@ -1779,7 +1900,7 @@ static type_t compile_condition(compiler_t *compiler, const ast_node_t *node, co
 	bool_hint = type_bool();
 	actual = compile_expr_typed(compiler, node, &bool_hint);
 	if (!type_equals(actual, type_bool())) {
-		compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", context);
+		compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", context);
 	}
 	return actual;
 }
@@ -1929,14 +2050,14 @@ static void compile_foreach_stmt(compiler_t *compiler, const ast_node_t *node) {
 	if (array_type.array_depth > 0) {
 		type_t element_type = type_element_of(array_type);
 		if (!type_equals(declared_type, element_type)) {
-			compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "loop variable is declared %s but the array holds %s", type_to_string(declared_type), type_to_string(element_type));
+			compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "loop variable is declared %s but the array holds %s", type_to_string(declared_type), type_to_string(element_type));
 		}
 	} else if (type_equals(array_type, type_string())) {
 		if (!type_equals(declared_type, type_string())) {
-			compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "iterating a string yields string, but the loop variable is declared %s", type_to_string(declared_type));
+			compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "iterating a string yields string, but the loop variable is declared %s", type_to_string(declared_type));
 		}
 	} else {
-		compiler_error(compiler, node->as.foreach_stmt.array_expr->line, node->as.foreach_stmt.array_expr->column, "compiler::not-indexable", "'for (T x : ...)' requires an array or a string, got %s", type_to_string(array_type));
+		compiler_error(compiler, node->as.foreach_stmt.array_expr->line, node->as.foreach_stmt.array_expr->column, 0, "compiler::not-indexable", "'for (T x : ...)' requires an array or a string, got %s", type_to_string(array_type));
 	}
 
 	index_token = synthetic_token("$for_index");
@@ -2003,7 +2124,7 @@ static void compile_break_stmt(compiler_t *compiler, const ast_node_t *node) {
 	size_t jump;
 
 	if (compiler->loop_count == 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::break-outside-loop", "'break' can only be used inside a loop");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::break-outside-loop", "'break' can only be used inside a loop");
 		return;
 	}
 
@@ -2022,7 +2143,7 @@ static void compile_continue_stmt(compiler_t *compiler, const ast_node_t *node) 
 	loop_context_t *loop;
 
 	if (compiler->loop_count == 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::continue-outside-loop", "'continue' can only be used inside a loop");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::continue-outside-loop", "'continue' can only be used inside a loop");
 		return;
 	}
 
@@ -2036,12 +2157,12 @@ static void compile_return_stmt(compiler_t *compiler, const ast_node_t *node) {
 
 	if (node->as.return_stmt.value != NULL) {
 		if (!compiler->has_return_type) {
-			compiler_error(compiler, node->line, node->column, "compiler::return-value-without-type", "cannot return a value from a function with no declared '-> type'");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::return-value-without-type", "cannot return a value from a function with no declared '-> type'");
 			compile_expr_typed(compiler, node->as.return_stmt.value, NULL);
 		} else {
 			value_type = compile_expr_typed(compiler, node->as.return_stmt.value, &compiler->return_type);
 			if (!type_is_assignable(compiler->return_type, value_type)) {
-				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "returned a %s value but this function is declared to return %s", type_to_string(value_type), type_to_string(compiler->return_type));
+				compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "returned a %s value but this function is declared to return %s", type_to_string(value_type), type_to_string(compiler->return_type));
 			}
 		}
 	} else {
@@ -2101,7 +2222,7 @@ static type_t compile_expr_typed(compiler_t *compiler, const ast_node_t *node, c
 			emit_byte(compiler, OP_NULL, node->line, node->column);
 			return type_null();
 		default:
-			compiler_error(compiler, node->line, node->column, "compiler::unsupported-expression", "expected an expression");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::unsupported-expression", "expected an expression");
 			return type_void();
 	}
 }
@@ -2129,7 +2250,7 @@ static type_t compile_compound_assign_value(compiler_t *compiler, const ast_node
 	emit_byte(compiler, opcode, node->line, node->column);
 
 	if (!type_is_assignable(target_type, result_type)) {
-		compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot assign a %s result back into a %s target", type_to_string(result_type), type_to_string(target_type));
+		compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "cannot assign a %s result back into a %s target", type_to_string(result_type), type_to_string(target_type));
 	}
 
 	return target_type;
@@ -2163,7 +2284,7 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 				} else {
 					value_type = compile_expr_typed(compiler, node->as.assign_expr.value, &target_type);
 					if (!type_is_assignable(target_type, value_type)) {
-						compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot assign a %s value to a %s variable", type_to_string(value_type), type_to_string(target_type));
+						compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "cannot assign a %s value to a %s variable", type_to_string(value_type), type_to_string(target_type));
 					}
 				}
 				emit_bytes(compiler, OP_SET_UPVALUE, (uint8_t)upvalue, node->line, node->column);
@@ -2181,7 +2302,7 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 					} else {
 						value_type = compile_expr_typed(compiler, node->as.assign_expr.value, &target_type);
 						if (!type_is_assignable(target_type, value_type)) {
-							compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot assign a %s value to a %s variable", type_to_string(value_type), type_to_string(target_type));
+							compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "cannot assign a %s value to a %s variable", type_to_string(value_type), type_to_string(target_type));
 						}
 					}
 					emit_name_op_str(compiler, OP_SET_GLOBAL, target->as.identifier_expr.name.start, target->as.identifier_expr.name.length, node->line, node->column);
@@ -2189,7 +2310,7 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 				}
 			}
 
-			compiler_error(compiler, node->line, node->column, "compiler::undeclared-assignment-target", "cannot assign to an undeclared or non-local variable");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::undeclared-assignment-target", "cannot assign to an undeclared or non-local variable");
 			compile_expr_typed(compiler, node->as.assign_expr.value, NULL);
 			return type_void();
 		}
@@ -2200,7 +2321,19 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 		} else {
 			value_type = compile_expr_typed(compiler, node->as.assign_expr.value, &target_type);
 			if (!type_is_assignable(target_type, value_type)) {
-				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot assign a %s value to a %s variable", type_to_string(value_type), type_to_string(target_type));
+				compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "cannot assign a %s value to a %s variable", type_to_string(value_type), type_to_string(target_type));
+			}
+			// A later `x = null;` is just as ambiguous for a register-
+			// cached scalar as an initializer's `null` is (see
+			// disqualify_local_reg_slot()'s own comment); compound
+			// assignment can never produce TYPE_NULL, so only this
+			// branch needs the check.
+			if (value_type.kind == TYPE_NULL) {
+				value_type_t vtype;
+
+				if (register_cacheable_value_type(target_type, &vtype) && vtype != VAL_OBJ) {
+					disqualify_local_reg_slot(compiler, slot);
+				}
 			}
 		}
 		emit_bytes(compiler, OP_SET_LOCAL, (uint8_t)slot, node->line, node->column);
@@ -2211,15 +2344,15 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 		object_type = compile_expr_typed(compiler, target->as.index_expr.object, NULL);
 
 		if (type_equals(object_type, type_string())) {
-			compiler_error(compiler, node->line, node->column, "compiler::string-immutable", "cannot assign into a string index; strings are immutable");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::string-immutable", "cannot assign into a string index; strings are immutable");
 		} else if (object_type.array_depth == 0) {
-			compiler_error(compiler, node->line, node->column, "compiler::not-indexable", "'[]' assignment only works on arrays, got %s", type_to_string(object_type));
+			compiler_error(compiler, node->line, node->column, 0, "compiler::not-indexable", "'[]' assignment only works on arrays, got %s", type_to_string(object_type));
 		}
 
 		element_expected = type_int();
 		index_type = compile_expr_typed(compiler, target->as.index_expr.index, &element_expected);
 		if (!type_equals(index_type, type_int())) {
-			compiler_error(compiler, node->line, node->column, "compiler::index-not-integer", "array index must be an int");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::index-not-integer", "array index must be an int");
 		}
 
 		element_expected = type_element_of(object_type);
@@ -2232,7 +2365,7 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 		} else if (object_type.array_depth > 0) {
 			value_type = compile_expr_typed(compiler, node->as.assign_expr.value, &element_expected);
 			if (!type_is_assignable(element_expected, value_type)) {
-				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot assign a %s into an array of %s", type_to_string(value_type), type_to_string(element_expected));
+				compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "cannot assign a %s into an array of %s", type_to_string(value_type), type_to_string(element_expected));
 			}
 		} else {
 			value_type = compile_expr_typed(compiler, node->as.assign_expr.value, NULL);
@@ -2246,7 +2379,7 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 		object_type = compile_expr_typed(compiler, target->as.member_expr.object, NULL);
 
 		if (object_type.kind != TYPE_STRUCT || object_type.array_depth > 0) {
-			compiler_error(compiler, node->line, node->column, "compiler::unsupported-member-assignment", "'.' assignment only works on struct fields");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::unsupported-member-assignment", "'.' assignment only works on struct fields");
 			compile_expr_typed(compiler, node->as.assign_expr.value, NULL);
 			return type_void();
 		}
@@ -2267,7 +2400,7 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 		} else {
 			value_type = compile_expr_typed(compiler, node->as.assign_expr.value, &target_type);
 			if (!type_is_assignable(target_type, value_type)) {
-				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot assign a %s value to field '%.*s' of type %s", type_to_string(value_type), (int)def->fields[field_index].name_length, def->fields[field_index].name, type_to_string(target_type));
+				compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "cannot assign a %s value to field '%.*s' of type %s", type_to_string(value_type), (int)def->fields[field_index].name_length, def->fields[field_index].name, type_to_string(target_type));
 			}
 		}
 
@@ -2275,7 +2408,7 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 		return target_type;
 	}
 
-	compiler_error(compiler, node->line, node->column, "compiler::unsupported-member-assignment", "assignment to member expressions is not supported yet");
+	compiler_error(compiler, node->line, node->column, 0, "compiler::unsupported-member-assignment", "assignment to member expressions is not supported yet");
 	compile_expr_typed(compiler, node->as.assign_expr.value, NULL);
 	return type_void();
 }
@@ -2320,23 +2453,23 @@ static type_t check_arithmetic_or_bitwise(compiler_t *compiler, uint8_t opcode, 
 	is_bitwise = opcode == OP_BIT_AND || opcode == OP_BIT_OR || opcode == OP_BIT_XOR || opcode == OP_SHIFT_LEFT || opcode == OP_SHIFT_RIGHT;
 	if (is_bitwise) {
 		if (!type_equals(left_type, type_int())) {
-			compiler_error(compiler, left_node->line, left_node->column, "compiler::type-mismatch", "left operand must be int, got %s", type_to_string(left_type));
+			compiler_error(compiler, left_node->line, left_node->column, 0, "compiler::type-mismatch", "left operand must be int, got %s", type_to_string(left_type));
 		}
 		if (!type_equals(right_type, type_int())) {
-			compiler_error(compiler, right_node->line, right_node->column, "compiler::type-mismatch", "right operand must be int, got %s", type_to_string(right_type));
+			compiler_error(compiler, right_node->line, right_node->column, 0, "compiler::type-mismatch", "right operand must be int, got %s", type_to_string(right_type));
 		}
 		return type_int();
 	}
 
 	if (!type_is_numeric(left_type)) {
-		compiler_error(compiler, left_node->line, left_node->column, "compiler::type-mismatch", "left operand must be int or float, got %s", type_to_string(left_type));
+		compiler_error(compiler, left_node->line, left_node->column, 0, "compiler::type-mismatch", "left operand must be int or float, got %s", type_to_string(left_type));
 	}
 	if (!type_is_numeric(right_type)) {
-		compiler_error(compiler, right_node->line, right_node->column, "compiler::type-mismatch", "right operand must be int or float, got %s", type_to_string(right_type));
+		compiler_error(compiler, right_node->line, right_node->column, 0, "compiler::type-mismatch", "right operand must be int or float, got %s", type_to_string(right_type));
 	}
 
 	if (opcode == OP_MODULO && (left_type.kind == TYPE_FLOAT || right_type.kind == TYPE_FLOAT)) {
-		compiler_error(compiler, line, column, "compiler::type-mismatch", "modulo requires int operands, got %s and %s", type_to_string(left_type), type_to_string(right_type));
+		compiler_error(compiler, line, column, 0, "compiler::type-mismatch", "modulo requires int operands, got %s and %s", type_to_string(left_type), type_to_string(right_type));
 		return type_int();
 	}
 
@@ -2379,7 +2512,7 @@ static type_t compile_binary_expr(compiler_t *compiler, const ast_node_t *node) 
 		case TOKEN_LESS_LESS: opcode = OP_SHIFT_LEFT; break;
 		case TOKEN_GREATER_GREATER: opcode = OP_SHIFT_RIGHT; break;
 		default:
-			compiler_error(compiler, node->line, node->column, "compiler::unsupported-binary-operator", "unsupported binary operator");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::unsupported-binary-operator", "unsupported binary operator");
 			emit_byte(compiler, OP_EQUAL, node->line, node->column);
 			return type_bool();
 	}
@@ -2390,7 +2523,7 @@ static type_t compile_binary_expr(compiler_t *compiler, const ast_node_t *node) 
 		bool numeric_pair = type_is_numeric(left_type) && type_is_numeric(right_type);
 		bool either_null = left_type.kind == TYPE_NULL || right_type.kind == TYPE_NULL;
 		if (!type_equals(left_type, right_type) && !numeric_pair && !either_null) {
-			compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot compare %s and %s for equality", type_to_string(left_type), type_to_string(right_type));
+			compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "cannot compare %s and %s for equality", type_to_string(left_type), type_to_string(right_type));
 		}
 		return type_bool();
 	}
@@ -2398,10 +2531,10 @@ static type_t compile_binary_expr(compiler_t *compiler, const ast_node_t *node) 
 	is_comparison = opcode == OP_LESS || opcode == OP_LESS_EQUAL || opcode == OP_GREATER || opcode == OP_GREATER_EQUAL;
 	if (is_comparison) {
 		if (!type_is_numeric(left_type)) {
-			compiler_error(compiler, node->as.binary_expr.left->line, node->as.binary_expr.left->column, "compiler::type-mismatch", "left operand must be int or float, got %s", type_to_string(left_type));
+			compiler_error(compiler, node->as.binary_expr.left->line, node->as.binary_expr.left->column, 0, "compiler::type-mismatch", "left operand must be int or float, got %s", type_to_string(left_type));
 		}
 		if (!type_is_numeric(right_type)) {
-			compiler_error(compiler, node->as.binary_expr.right->line, node->as.binary_expr.right->column, "compiler::type-mismatch", "right operand must be int or float, got %s", type_to_string(right_type));
+			compiler_error(compiler, node->as.binary_expr.right->line, node->as.binary_expr.right->column, 0, "compiler::type-mismatch", "right operand must be int or float, got %s", type_to_string(right_type));
 		}
 		return type_bool();
 	}
@@ -2431,7 +2564,7 @@ static type_t compile_logical_expr(compiler_t *compiler, const ast_node_t *node)
 
 	left_type = compile_expr_typed(compiler, node->as.binary_expr.left, &bool_hint);
 	if (!type_equals(left_type, type_bool())) {
-		compiler_error(compiler, node->as.binary_expr.left->line, node->as.binary_expr.left->column, "compiler::type-mismatch", "left operand of '%s' must be bool, got %s", is_and ? "&&" : "||", type_to_string(left_type));
+		compiler_error(compiler, node->as.binary_expr.left->line, node->as.binary_expr.left->column, 0, "compiler::type-mismatch", "left operand of '%s' must be bool, got %s", is_and ? "&&" : "||", type_to_string(left_type));
 	}
 
 	if (is_and) {
@@ -2449,7 +2582,7 @@ static type_t compile_logical_expr(compiler_t *compiler, const ast_node_t *node)
 	}
 
 	if (!type_equals(right_type, type_bool())) {
-		compiler_error(compiler, node->as.binary_expr.right->line, node->as.binary_expr.right->column, "compiler::type-mismatch", "right operand of '%s' must be bool, got %s", is_and ? "&&" : "||", type_to_string(right_type));
+		compiler_error(compiler, node->as.binary_expr.right->line, node->as.binary_expr.right->column, 0, "compiler::type-mismatch", "right operand of '%s' must be bool, got %s", is_and ? "&&" : "||", type_to_string(right_type));
 	}
 
 	return type_bool();
@@ -2463,24 +2596,24 @@ static type_t compile_unary_expr(compiler_t *compiler, const ast_node_t *node) {
 	switch (node->as.unary_expr.op) {
 		case TOKEN_MINUS:
 			if (!type_is_numeric(operand_type)) {
-				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "unary '-' requires an int or float operand, got %s", type_to_string(operand_type));
+				compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "unary '-' requires an int or float operand, got %s", type_to_string(operand_type));
 			}
 			emit_byte(compiler, OP_NEGATE, node->line, node->column);
 			return type_is_numeric(operand_type) ? operand_type : type_int();
 		case TOKEN_BANG:
 			if (!type_equals(operand_type, type_bool())) {
-				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "unary '!' requires a bool operand, got %s", type_to_string(operand_type));
+				compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "unary '!' requires a bool operand, got %s", type_to_string(operand_type));
 			}
 			emit_byte(compiler, OP_NOT, node->line, node->column);
 			return type_bool();
 		case TOKEN_TILDE:
 			if (!type_equals(operand_type, type_int())) {
-				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "unary '~' requires an int operand, got %s", type_to_string(operand_type));
+				compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "unary '~' requires an int operand, got %s", type_to_string(operand_type));
 			}
 			emit_byte(compiler, OP_BIT_NOT, node->line, node->column);
 			return type_int();
 		default:
-			compiler_error(compiler, node->line, node->column, "compiler::unsupported-unary-operator", "unsupported unary operator");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::unsupported-unary-operator", "unsupported unary operator");
 			emit_byte(compiler, OP_NOT, node->line, node->column);
 			return type_bool();
 	}
@@ -2496,7 +2629,7 @@ static type_t compile_index_expr(compiler_t *compiler, const ast_node_t *node) {
 	index_type = compile_expr_typed(compiler, node->as.index_expr.index, &element_expected);
 
 	if (!type_equals(index_type, type_int())) {
-		compiler_error(compiler, node->line, node->column, "compiler::index-not-integer", "array/string index must be an int");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::index-not-integer", "array/string index must be an int");
 	}
 
 	emit_byte(compiler, OP_GET_INDEX, node->line, node->column);
@@ -2508,7 +2641,7 @@ static type_t compile_index_expr(compiler_t *compiler, const ast_node_t *node) {
 		return type_string();
 	}
 
-	compiler_error(compiler, node->line, node->column, "compiler::not-indexable", "'[]' access only works on arrays and strings, got %s", type_to_string(object_type));
+	compiler_error(compiler, node->line, node->column, 0, "compiler::not-indexable", "'[]' access only works on arrays and strings, got %s", type_to_string(object_type));
 	return type_int();
 }
 
@@ -2527,14 +2660,14 @@ static type_t compile_array_literal(compiler_t *compiler, const ast_node_t *node
 	element_expected = have_element_expected ? type_element_of(*expected) : type_int();
 
 	if (count > UINT8_MAX) {
-		compiler_error(compiler, node->line, node->column, "compiler::too-many-elements", "an array literal can have at most 255 elements");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::too-many-elements", "an array literal can have at most 255 elements");
 		count = 0;
 	}
 
 	if (count == 0) {
 		emit_bytes(compiler, OP_ARRAY, 0, node->line, node->column);
 		if (!have_element_expected) {
-			compiler_error(compiler, node->line, node->column, "compiler::ambiguous-empty-array", "cannot infer the element type of an empty array literal here");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::ambiguous-empty-array", "cannot infer the element type of an empty array literal here");
 		}
 		return type_array_of(element_expected);
 	}
@@ -2546,7 +2679,7 @@ static type_t compile_array_literal(compiler_t *compiler, const ast_node_t *node
 		element_node = node->as.array_literal.elements.items[i];
 		next_type = compile_expr_typed(compiler, element_node, &element_type);
 		if (!type_equals(next_type, element_type)) {
-			compiler_error(compiler, element_node->line, element_node->column, "compiler::array-literal-type-mismatch", "array literal elements must all have the same type");
+			compiler_error(compiler, element_node->line, element_node->column, 0, "compiler::array-literal-type-mismatch", "array literal elements must all have the same type");
 		}
 	}
 
@@ -2554,12 +2687,12 @@ static type_t compile_array_literal(compiler_t *compiler, const ast_node_t *node
 	return type_array_of(element_type);
 }
 
-// True if sig's own parameter/return shape matches ft exactly. Used to
-// pick which overload a bare, ambiguous function name refers to when
-// used as a value (compile_function_value_ref()), the same "exact
-// match against a known expected type" rule overload resolution at a
-// call site already uses, just compared directly against sig's fields
-// instead of building a func_type_t first.
+/* True if sig's own parameter/return shape matches ft exactly. Used to
+   pick which overload a bare, ambiguous function name refers to when
+   used as a value (compile_function_value_ref()), the same "exact
+   match against a known expected type" rule overload resolution at a
+   call site already uses, just compared directly against sig's fields
+   instead of building a func_type_t first. */
 static bool signature_matches_func_type(const signature_t *sig, const func_type_t *ft) {
 	size_t i;
 
@@ -2613,7 +2746,7 @@ static type_t compile_function_value_ref(compiler_t *compiler, const ast_node_t 
 	}
 
 	if (sig == NULL) {
-		compiler_error(compiler, node->line, node->column, "compiler::ambiguous-function-reference", "'%.*s' has multiple overloads; a known function type is needed here to tell which one this refers to", (int)node->as.identifier_expr.name.length, node->as.identifier_expr.name.start);
+		compiler_error(compiler, node->line, node->column, (int)node->as.identifier_expr.name.length, "compiler::ambiguous-function-reference", "'%.*s' has multiple overloads; a known function type is needed here to tell which one this refers to", (int)node->as.identifier_expr.name.length, node->as.identifier_expr.name.start);
 		return type_void();
 	}
 
@@ -2657,11 +2790,11 @@ static type_t compile_identifier_expr(compiler_t *compiler, const ast_node_t *no
 	}
 
 	if (name.length == 6 && memcmp(name.start, "stdlib", 6) == 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::module-used-as-value", "'stdlib' is a module; access a member and call it");
+		compiler_error(compiler, node->line, node->column, 6, "compiler::module-used-as-value", "'stdlib' is a module; access a member and call it");
 		return type_void();
 	}
-	if (compiler->imported_module != NULL && name.length == compiler->imported_module->local_name_length && memcmp(name.start, compiler->imported_module->local_name, name.length) == 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::module-used-as-value", "'%.*s' is a module; access a member and call it", (int)name.length, name.start);
+	if (find_imported_module(compiler->imported_modules, compiler->imported_module_count, name.start, name.length) != NULL) {
+		compiler_error(compiler, node->line, node->column, (int)name.length, "compiler::module-used-as-value", "'%.*s' is a module; access a member and call it", (int)name.length, name.start);
 		return type_void();
 	}
 
@@ -2673,7 +2806,7 @@ static type_t compile_identifier_expr(compiler_t *compiler, const ast_node_t *no
 		}
 	}
 
-	compiler_error(compiler, node->line, node->column, "compiler::undefined-variable", "undefined variable '%.*s'", (int)name.length, name.start);
+	compiler_error(compiler, node->line, node->column, (int)name.length, "compiler::undefined-variable", "undefined variable '%.*s'", (int)name.length, name.start);
 	return type_void();
 }
 
@@ -2688,7 +2821,7 @@ static int resolve_struct_field(compiler_t *compiler, const ast_node_t *node, co
 	*out_def = object_type->struct_def;
 	index = struct_def_find_field(object_type->struct_def, name, name_length);
 	if (index < 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::unknown-field", "'%.*s' has no field '%.*s'", (int)object_type->struct_def->name_length, object_type->struct_def->name, (int)name_length, name);
+		compiler_error(compiler, node->as.member_expr.name.line, node->as.member_expr.name.column, (int)name_length, "compiler::unknown-field", "'%.*s' has no field '%.*s'", (int)object_type->struct_def->name_length, object_type->struct_def->name, (int)name_length, name);
 	}
 	return index;
 }
@@ -2716,28 +2849,35 @@ static type_t compile_member_expr(compiler_t *compiler, const ast_node_t *node) 
 		object_name = object_node->as.identifier_expr.name;
 
 		if (object_name.length == 6 && memcmp(object_name.start, "stdlib", 6) == 0) {
-			compiler_error(compiler, node->line, node->column, "compiler::unsupported-member-access", "cannot use 'stdlib.%.*s' without calling it", (int)node->as.member_expr.name.length, node->as.member_expr.name.start);
+			compiler_error(compiler, node->as.member_expr.name.line, node->as.member_expr.name.column, (int)node->as.member_expr.name.length, "compiler::unsupported-member-access", "cannot use 'stdlib.%.*s' without calling it", (int)node->as.member_expr.name.length, node->as.member_expr.name.start);
 			return type_void();
 		}
 
 		// A struct type name used bare (`Point.origin`, not called):
 		// same "cannot use without calling it" treatment as stdlib/module,
 		// for the same reason; a struct function is only ever a call
-		// target, never a value.
+		// target, never a value. Whether it's ambiguous across two
+		// imports doesn't matter for this check specifically, only
+		// whether *some* struct by this name exists at all; an actual
+		// use of the type elsewhere is what reports ambiguity.
 		type_def = struct_registry_find(compiler->structs, object_name.start, object_name.length);
-		if (type_def == NULL && compiler->imported_module != NULL) {
-			struct_def_t *imported_type_def = struct_registry_find(compiler->imported_module->exported_structs, object_name.start, object_name.length);
-			if (imported_type_def != NULL && imported_type_def->is_exported) {
-				type_def = imported_type_def;
+		if (type_def == NULL) {
+			size_t m;
+			for (m = 0; m < compiler->imported_module_count; m++) {
+				struct_def_t *imported_type_def = struct_registry_find(compiler->imported_modules[m]->exported_structs, object_name.start, object_name.length);
+				if (imported_type_def != NULL && imported_type_def->is_exported) {
+					type_def = imported_type_def;
+					break;
+				}
 			}
 		}
 		if (type_def != NULL) {
-			compiler_error(compiler, node->line, node->column, "compiler::unsupported-member-access", "cannot use '%.*s.%.*s' without calling it", (int)object_name.length, object_name.start, (int)node->as.member_expr.name.length, node->as.member_expr.name.start);
+			compiler_error(compiler, node->as.member_expr.name.line, node->as.member_expr.name.column, (int)node->as.member_expr.name.length, "compiler::unsupported-member-access", "cannot use '%.*s.%.*s' without calling it", (int)object_name.length, object_name.start, (int)node->as.member_expr.name.length, node->as.member_expr.name.start);
 			return type_void();
 		}
 
-		if (compiler->imported_module != NULL && object_name.length == compiler->imported_module->local_name_length && memcmp(object_name.start, compiler->imported_module->local_name, object_name.length) == 0) {
-			compiler_error(compiler, node->line, node->column, "compiler::unsupported-member-access", "cannot use '%.*s.%.*s' without calling it", (int)object_name.length, object_name.start, (int)node->as.member_expr.name.length, node->as.member_expr.name.start);
+		if (find_imported_module(compiler->imported_modules, compiler->imported_module_count, object_name.start, object_name.length) != NULL) {
+			compiler_error(compiler, node->as.member_expr.name.line, node->as.member_expr.name.column, (int)node->as.member_expr.name.length, "compiler::unsupported-member-access", "cannot use '%.*s.%.*s' without calling it", (int)object_name.length, object_name.start, (int)node->as.member_expr.name.length, node->as.member_expr.name.start);
 			return type_void();
 		}
 	}
@@ -2745,7 +2885,7 @@ static type_t compile_member_expr(compiler_t *compiler, const ast_node_t *node) 
 	object_type = compile_expr_typed(compiler, object_node, NULL);
 
 	if (object_type.kind != TYPE_STRUCT || object_type.array_depth > 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::unsupported-member-access", "'.' only works on struct fields, or a module (which must be called)");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::unsupported-member-access", "'.' only works on struct fields, or a module (which must be called)");
 		return type_void();
 	}
 
@@ -2781,14 +2921,23 @@ static type_t compile_struct_literal(compiler_t *compiler, const ast_node_t *nod
 
 	if (node->as.struct_literal.has_type_name) {
 		def = struct_registry_find(compiler->structs, node->as.struct_literal.type_name.start, node->as.struct_literal.type_name.length);
-		if (def == NULL && compiler->imported_module != NULL) {
-			def = struct_registry_find(compiler->imported_module->exported_structs, node->as.struct_literal.type_name.start, node->as.struct_literal.type_name.length);
-			if (def != NULL && !def->is_exported) {
-				def = NULL;
+		if (def == NULL) {
+			size_t m;
+			size_t match_count = 0;
+			for (m = 0; m < compiler->imported_module_count; m++) {
+				struct_def_t *candidate = struct_registry_find(compiler->imported_modules[m]->exported_structs, node->as.struct_literal.type_name.start, node->as.struct_literal.type_name.length);
+				if (candidate != NULL && candidate->is_exported) {
+					def = candidate;
+					match_count++;
+				}
+			}
+			if (match_count > 1) {
+				compiler_error(compiler, node->line, node->column, (int)node->as.struct_literal.type_name.length, "compiler::ambiguous-struct-name", "'%.*s' is exported by more than one imported module", (int)node->as.struct_literal.type_name.length, node->as.struct_literal.type_name.start);
+				return type_void();
 			}
 		}
 		if (def == NULL) {
-			compiler_error(compiler, node->line, node->column, "compiler::unknown-type", "unknown struct type '%.*s'", (int)node->as.struct_literal.type_name.length, node->as.struct_literal.type_name.start);
+			compiler_error(compiler, node->line, node->column, (int)node->as.struct_literal.type_name.length, "compiler::unknown-type", "unknown struct type '%.*s'", (int)node->as.struct_literal.type_name.length, node->as.struct_literal.type_name.start);
 			return type_void();
 		}
 	} else {
@@ -2796,7 +2945,7 @@ static type_t compile_struct_literal(compiler_t *compiler, const ast_node_t *nod
 		// way an empty array literal `[]` borrows its element type from
 		// `expected` instead of spelling it out.
 		if (expected == NULL || expected->kind != TYPE_STRUCT || expected->array_depth > 0) {
-			compiler_error(compiler, node->line, node->column, "compiler::ambiguous-struct-literal", "cannot infer the struct type of '{ ... }' here; give an explicit type name");
+			compiler_error(compiler, node->line, node->column, 0, "compiler::ambiguous-struct-literal", "cannot infer the struct type of '{ ... }' here; give an explicit type name");
 			return type_void();
 		}
 		def = expected->struct_def;
@@ -2809,20 +2958,20 @@ static type_t compile_struct_literal(compiler_t *compiler, const ast_node_t *nod
 		field_init = node->as.struct_literal.fields.items[i];
 		field_index = struct_def_find_field(def, field_init->as.struct_field_init.name.start, field_init->as.struct_field_init.name.length);
 		if (field_index < 0) {
-			compiler_error(compiler, field_init->line, field_init->column, "compiler::unknown-field", "'%.*s' has no field '%.*s'", (int)def->name_length, def->name, (int)field_init->as.struct_field_init.name.length, field_init->as.struct_field_init.name.start);
+			compiler_error(compiler, field_init->line, field_init->column, (int)field_init->as.struct_field_init.name.length, "compiler::unknown-field", "'%.*s' has no field '%.*s'", (int)def->name_length, def->name, (int)field_init->as.struct_field_init.name.length, field_init->as.struct_field_init.name.start);
 			continue;
 		}
 		for (j = 0; j < i; j++) {
 			earlier = node->as.struct_literal.fields.items[j];
 			if (identifiers_equal(earlier->as.struct_field_init.name, field_init->as.struct_field_init.name)) {
-				compiler_error(compiler, field_init->line, field_init->column, "compiler::duplicate-field", "field '%.*s' is set more than once", (int)field_init->as.struct_field_init.name.length, field_init->as.struct_field_init.name.start);
+				compiler_error(compiler, field_init->line, field_init->column, (int)field_init->as.struct_field_init.name.length, "compiler::duplicate-field", "field '%.*s' is set more than once", (int)field_init->as.struct_field_init.name.length, field_init->as.struct_field_init.name.start);
 				break;
 			}
 		}
 	}
 
 	if (def->field_count > UINT8_MAX) {
-		compiler_error(compiler, node->line, node->column, "compiler::too-many-fields", "a struct can have at most 255 fields");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::too-many-fields", "a struct can have at most 255 fields");
 	}
 
 	for (i = 0; i < def->field_count; i++) {
@@ -2838,15 +2987,15 @@ static type_t compile_struct_literal(compiler_t *compiler, const ast_node_t *nod
 		if (matched != NULL) {
 			value_type = compile_expr_typed(compiler, matched->as.struct_field_init.value, &def->fields[i].type);
 			if (!type_is_assignable(def->fields[i].type, value_type)) {
-				compiler_error(compiler, matched->line, matched->column, "compiler::type-mismatch", "field '%.*s' expects %s, got %s", (int)def->fields[i].name_length, def->fields[i].name, type_to_string(def->fields[i].type), type_to_string(value_type));
+				compiler_error(compiler, matched->line, matched->column, (int)matched->as.struct_field_init.name.length, "compiler::type-mismatch", "field '%.*s' expects %s, got %s", (int)def->fields[i].name_length, def->fields[i].name, type_to_string(def->fields[i].type), type_to_string(value_type));
 			}
 		} else if (def->fields[i].default_value != NULL) {
 			value_type = compile_expr_typed(compiler, def->fields[i].default_value, &def->fields[i].type);
 			if (!type_is_assignable(def->fields[i].type, value_type)) {
-				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "default value for field '%.*s' must be %s, got %s", (int)def->fields[i].name_length, def->fields[i].name, type_to_string(def->fields[i].type), type_to_string(value_type));
+				compiler_error(compiler, node->line, node->column, 0, "compiler::type-mismatch", "default value for field '%.*s' must be %s, got %s", (int)def->fields[i].name_length, def->fields[i].name, type_to_string(def->fields[i].type), type_to_string(value_type));
 			}
 		} else {
-			compiler_error(compiler, node->line, node->column, "compiler::missing-field", "struct literal for '%.*s' is missing required field '%.*s'", (int)def->name_length, def->name, (int)def->fields[i].name_length, def->fields[i].name);
+			compiler_error(compiler, node->line, node->column, 0, "compiler::missing-field", "struct literal for '%.*s' is missing required field '%.*s'", (int)def->name_length, def->name, (int)def->fields[i].name_length, def->fields[i].name);
 			emit_byte(compiler, OP_NULL, node->line, node->column);
 		}
 	}
@@ -2913,7 +3062,7 @@ static type_t compile_call_expr(compiler_t *compiler, const ast_node_t *node) {
 				type_t member_type = compile_member_expr(compiler, callee);
 
 				if (member_type.kind != TYPE_FUNCTION) {
-					compiler_error(compiler, node->line, node->column, "compiler::not-callable", "this expression cannot be called");
+					compiler_error(compiler, node->line, node->column, 0, "compiler::not-callable", "this expression cannot be called");
 					return type_void();
 				}
 				return compile_value_call(compiler, node, member_type);
@@ -2923,7 +3072,7 @@ static type_t compile_call_expr(compiler_t *compiler, const ast_node_t *node) {
 		return compile_member_call(compiler, node);
 	}
 
-	compiler_error(compiler, node->line, node->column, "compiler::not-callable", "this expression cannot be called");
+	compiler_error(compiler, node->line, node->column, 0, "compiler::not-callable", "this expression cannot be called");
 	return type_void();
 }
 
@@ -2947,12 +3096,12 @@ static type_t compile_value_call(compiler_t *compiler, const ast_node_t *node, t
 	arg_count = node->as.call_expr.args.count;
 
 	if (arg_count > UINT8_MAX) {
-		compiler_error(compiler, node->line, node->column, "compiler::too-many-arguments", "a call can have at most 255 arguments");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::too-many-arguments", "a call can have at most 255 arguments");
 		arg_count = 0;
 	}
 
 	if (arg_count != ft->param_count) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-count-mismatch", "expected %zu arguments but got %zu", ft->param_count, arg_count);
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-count-mismatch", "expected %zu arguments but got %zu", ft->param_count, arg_count);
 	}
 
 	for (i = 0; i < arg_count; i++) {
@@ -2961,7 +3110,7 @@ static type_t compile_value_call(compiler_t *compiler, const ast_node_t *node, t
 			hint = ft->param_types[i];
 			arg_type = compile_expr_typed(compiler, arg_node, &hint);
 			if (!type_is_assignable(ft->param_types[i], arg_type)) {
-				compiler_error(compiler, arg_node->line, arg_node->column, "compiler::argument-type-mismatch", "argument %zu expects %s, got %s", i + 1, type_to_string(ft->param_types[i]), type_to_string(arg_type));
+				compiler_error(compiler, arg_node->line, arg_node->column, 0, "compiler::argument-type-mismatch", "argument %zu expects %s, got %s", i + 1, type_to_string(ft->param_types[i]), type_to_string(arg_type));
 			}
 		} else {
 			compile_expr_typed(compiler, arg_node, NULL);
@@ -2975,7 +3124,7 @@ static type_t compile_value_call(compiler_t *compiler, const ast_node_t *node, t
 
 static type_t compile_bare_call(compiler_t *compiler, const ast_node_t *node, token_t name) {
 	if (signature_table_find_set(compiler->file_signatures, name.start, name.length) != NULL) {
-		return finish_resolved_call(compiler, compiler->file_signatures, name.start, name.length, node, OP_GET_GLOBAL, true, NULL, 0, NULL);
+		return finish_resolved_call(compiler, compiler->file_signatures, name.start, name.length, name.line, name.column, node, OP_GET_GLOBAL, true, NULL, 0, NULL);
 	}
 
 	// print(x) accepts any type for its single argument, checked
@@ -2991,7 +3140,7 @@ static type_t compile_bare_call(compiler_t *compiler, const ast_node_t *node, to
 		return type_void();
 	}
 
-	return finish_resolved_call(compiler, &g_native_globals, name.start, name.length, node, OP_GET_GLOBAL, false, NULL, 0, NULL);
+	return finish_resolved_call(compiler, &g_native_globals, name.start, name.length, name.line, name.column, node, OP_GET_GLOBAL, false, NULL, 0, NULL);
 }
 
 static type_t compile_member_call(compiler_t *compiler, const ast_node_t *node) {
@@ -3000,13 +3149,16 @@ static type_t compile_member_call(compiler_t *compiler, const ast_node_t *node) 
 	token_t member_name;
 	token_t object_name;
 	struct_def_t *def;
+	const module_unit_t *module;
+	size_t m;
+	size_t match_count;
 
 	callee = node->as.call_expr.callee;
 	object = callee->as.member_expr.object;
 	member_name = callee->as.member_expr.name;
 
 	if (object->kind != AST_IDENTIFIER_EXPR) {
-		compiler_error(compiler, node->line, node->column, "compiler::unsupported-member-access", "'.' access only works on modules");
+		compiler_error(compiler, object->line, object->column, 0, "compiler::unsupported-member-access", "'.' access only works on modules");
 		return type_void();
 	}
 
@@ -3020,23 +3172,34 @@ static type_t compile_member_call(compiler_t *compiler, const ast_node_t *node) 
 	// function is ever called (see type.h's struct_def_t.methods/
 	// namespace_obj). Local structs win over an imported one sharing the
 	// same name, matching every other unqualified struct-name lookup
-	// (resolve_type_ref(), compile_struct_literal()).
+	// (resolve_type_ref(), compile_struct_literal()); two different
+	// imports sharing the name, with no local one to win instead, is
+	// ambiguous rather than picking either.
 	def = struct_registry_find(compiler->structs, object_name.start, object_name.length);
-	if (def == NULL && compiler->imported_module != NULL) {
-		struct_def_t *imported_def = struct_registry_find(compiler->imported_module->exported_structs, object_name.start, object_name.length);
-		if (imported_def != NULL && imported_def->is_exported) {
-			def = imported_def;
+	if (def == NULL) {
+		match_count = 0;
+		for (m = 0; m < compiler->imported_module_count; m++) {
+			struct_def_t *imported_def = struct_registry_find(compiler->imported_modules[m]->exported_structs, object_name.start, object_name.length);
+			if (imported_def != NULL && imported_def->is_exported) {
+				def = imported_def;
+				match_count++;
+			}
+		}
+		if (match_count > 1) {
+			compiler_error(compiler, object_name.line, object_name.column, (int)object_name.length, "compiler::ambiguous-struct-name", "'%.*s' is exported by more than one imported module", (int)object_name.length, object_name.start);
+			return type_void();
 		}
 	}
 	if (def != NULL) {
 		return compile_struct_call(compiler, node, def, member_name);
 	}
 
-	if (compiler->imported_module != NULL && object_name.length == compiler->imported_module->local_name_length && memcmp(object_name.start, compiler->imported_module->local_name, compiler->imported_module->local_name_length) == 0) {
-		return compile_module_call(compiler, node, member_name);
+	module = find_imported_module(compiler->imported_modules, compiler->imported_module_count, object_name.start, object_name.length);
+	if (module != NULL) {
+		return compile_module_call(compiler, node, member_name, module);
 	}
 
-	compiler_error(compiler, node->line, node->column, "compiler::unknown-module", "'%.*s' is not a known module", (int)object_name.length, object_name.start);
+	compiler_error(compiler, object_name.line, object_name.column, (int)object_name.length, "compiler::unknown-module", "'%.*s' is not a known module", (int)object_name.length, object_name.start);
 	return type_void();
 }
 
@@ -3054,11 +3217,11 @@ static type_t compile_stdlib_call(compiler_t *compiler, const ast_node_t *node, 
 		return compile_sort_call(compiler, node);
 	}
 
-	return finish_resolved_call(compiler, &g_stdlib_members, member_name.start, member_name.length, node, OP_GET_PROPERTY, false, "stdlib", 6, NULL);
+	return finish_resolved_call(compiler, &g_stdlib_members, member_name.start, member_name.length, member_name.line, member_name.column, node, OP_GET_PROPERTY, false, "stdlib", 6, NULL);
 }
 
-static type_t compile_module_call(compiler_t *compiler, const ast_node_t *node, token_t member_name) {
-	return finish_resolved_call(compiler, &compiler->imported_module->exports, member_name.start, member_name.length, node, OP_GET_PROPERTY, true, compiler->imported_module->local_name, compiler->imported_module->local_name_length, NULL);
+static type_t compile_module_call(compiler_t *compiler, const ast_node_t *node, token_t member_name, const module_unit_t *module) {
+	return finish_resolved_call(compiler, &module->exports, member_name.start, member_name.length, member_name.line, member_name.column, node, OP_GET_PROPERTY, true, module->local_name, module->local_name_length, NULL);
 }
 
 /* `Point.name(args)`: def is already resolved by the caller
@@ -3069,20 +3232,20 @@ static type_t compile_module_call(compiler_t *compiler, const ast_node_t *node, 
    (unqualified) mangled name is enough; no cross-struct collision is
    possible. */
 static type_t compile_struct_call(compiler_t *compiler, const ast_node_t *node, const struct_def_t *def, token_t member_name) {
-	return finish_resolved_call(compiler, def->methods, member_name.start, member_name.length, node, OP_GET_PROPERTY, true, NULL, 0, (obj_t *)def->namespace_obj);
+	return finish_resolved_call(compiler, def->methods, member_name.start, member_name.length, member_name.line, member_name.column, node, OP_GET_PROPERTY, true, NULL, 0, (obj_t *)def->namespace_obj);
 }
 
-// length/push/pop are polymorphic over array element type in a way a
-// fixed signature_t cannot express ("(T[]) -> int" for any T), so they
-// are resolved by inspecting the argument's actual compiled type
-// directly instead of going through the normal overload-matching path.
-// The string form of length still shares the ordinary signature table
-// (see native_signatures.c); only the array form needs this.
+/* length/push/pop are polymorphic over array element type in a way a
+   fixed signature_t cannot express ("(T[]) -> int" for any T), so they
+   are resolved by inspecting the argument's actual compiled type
+   directly instead of going through the normal overload-matching path.
+   The string form of length still shares the ordinary signature table
+   (see native_signatures.c); only the array form needs this. */
 static type_t compile_length_call(compiler_t *compiler, const ast_node_t *node) {
 	type_t arg_type;
 
 	if (node->as.call_expr.args.count != 1) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-count-mismatch", "length expects 1 argument");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-count-mismatch", "length expects 1 argument");
 		return type_int();
 	}
 
@@ -3095,7 +3258,7 @@ static type_t compile_length_call(compiler_t *compiler, const ast_node_t *node) 
 		return type_int();
 	}
 
-	compiler_error(compiler, node->line, node->column, "compiler::argument-type-mismatch", "length expects a string or an array argument");
+	compiler_error(compiler, node->line, node->column, 0, "compiler::argument-type-mismatch", "length expects a string or an array argument");
 	return type_int();
 }
 
@@ -3105,7 +3268,7 @@ static type_t compile_push_call(compiler_t *compiler, const ast_node_t *node) {
 	type_t element_expected;
 
 	if (node->as.call_expr.args.count != 2) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-count-mismatch", "push expects 2 arguments");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-count-mismatch", "push expects 2 arguments");
 		return type_void();
 	}
 
@@ -3115,7 +3278,7 @@ static type_t compile_push_call(compiler_t *compiler, const ast_node_t *node) {
 	array_type = compile_expr_typed(compiler, node->as.call_expr.args.items[0], NULL);
 
 	if (array_type.array_depth == 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-type-mismatch", "push expects an array as its first argument");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-type-mismatch", "push expects an array as its first argument");
 		compile_expr_typed(compiler, node->as.call_expr.args.items[1], NULL);
 		emit_bytes(compiler, OP_CALL, 2, node->line, node->column);
 		return type_void();
@@ -3125,7 +3288,7 @@ static type_t compile_push_call(compiler_t *compiler, const ast_node_t *node) {
 	value_type = compile_expr_typed(compiler, node->as.call_expr.args.items[1], &element_expected);
 
 	if (!type_is_assignable(element_expected, value_type)) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-type-mismatch", "cannot push this value onto an array of a different element type");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-type-mismatch", "cannot push this value onto an array of a different element type");
 	}
 
 	emit_bytes(compiler, OP_CALL, 2, node->line, node->column);
@@ -3136,7 +3299,7 @@ static type_t compile_pop_call(compiler_t *compiler, const ast_node_t *node) {
 	type_t array_type;
 
 	if (node->as.call_expr.args.count != 1) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-count-mismatch", "pop expects 1 argument");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-count-mismatch", "pop expects 1 argument");
 		return type_void();
 	}
 
@@ -3147,7 +3310,7 @@ static type_t compile_pop_call(compiler_t *compiler, const ast_node_t *node) {
 	emit_bytes(compiler, OP_CALL, 1, node->line, node->column);
 
 	if (array_type.array_depth == 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-type-mismatch", "pop expects an array argument");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-type-mismatch", "pop expects an array argument");
 		return type_int();
 	}
 
@@ -3173,7 +3336,7 @@ static type_t compile_sort_call(compiler_t *compiler, const ast_node_t *node) {
 	func_type_t *expected_ft;
 
 	if (node->as.call_expr.args.count != 2) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-count-mismatch", "sort expects 2 arguments");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-count-mismatch", "sort expects 2 arguments");
 		return type_void();
 	}
 
@@ -3183,7 +3346,7 @@ static type_t compile_sort_call(compiler_t *compiler, const ast_node_t *node) {
 	array_type = compile_expr_typed(compiler, node->as.call_expr.args.items[0], NULL);
 
 	if (array_type.array_depth == 0) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-type-mismatch", "sort expects an array as its first argument");
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-type-mismatch", "sort expects an array as its first argument");
 		compile_expr_typed(compiler, node->as.call_expr.args.items[1], NULL);
 		emit_bytes(compiler, OP_CALL, 2, node->line, node->column);
 		return type_void();
@@ -3202,7 +3365,7 @@ static type_t compile_sort_call(compiler_t *compiler, const ast_node_t *node) {
 
 	comparator_type = compile_expr_typed(compiler, node->as.call_expr.args.items[1], &expected);
 	if (!type_equals(expected, comparator_type)) {
-		compiler_error(compiler, node->line, node->column, "compiler::argument-type-mismatch", "sort's comparator must be %s, got %s", type_to_string(expected), type_to_string(comparator_type));
+		compiler_error(compiler, node->line, node->column, 0, "compiler::argument-type-mismatch", "sort's comparator must be %s, got %s", type_to_string(expected), type_to_string(comparator_type));
 	}
 
 	emit_bytes(compiler, OP_CALL, 2, node->line, node->column);
@@ -3221,7 +3384,7 @@ static type_t compile_sort_call(compiler_t *compiler, const ast_node_t *node) {
    imported from a module, where overloading is real), plain for
    natives (never mangled, since exactly one obj_native_t backs every
    overload signature.c type-checks for a given name). */
-static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t *table, const char *name, size_t name_length, const ast_node_t *call_node, uint8_t patch_opcode, bool use_mangled_name, const char *prefix_name, size_t prefix_name_length, obj_t *prefix_constant) {
+static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t *table, const char *name, size_t name_length, int name_line, int name_column, const ast_node_t *call_node, uint8_t patch_opcode, bool use_mangled_name, const char *prefix_name, size_t prefix_name_length, obj_t *prefix_constant) {
 	overload_set_t *set;
 	size_t arg_count;
 	size_t i;
@@ -3238,7 +3401,7 @@ static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t
 	arg_count = call_node->as.call_expr.args.count;
 
 	if (arg_count > UINT8_MAX) {
-		compiler_error(compiler, call_node->line, call_node->column, "compiler::too-many-arguments", "a call can have at most 255 arguments");
+		compiler_error(compiler, call_node->line, call_node->column, 0, "compiler::too-many-arguments", "a call can have at most 255 arguments");
 		arg_count = 0;
 	}
 
@@ -3270,7 +3433,8 @@ static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t
 	}
 
 	patch_offset = current_chunk(compiler)->count;
-	emit_bytes(compiler, patch_opcode, 0xff, call_node->line, call_node->column);
+	emit_byte(compiler, patch_opcode, call_node->line, call_node->column);
+	emit_bytes(compiler, 0xff, 0xff, call_node->line, call_node->column);
 
 	arg_types = arg_count > 0 ? malloc(arg_count * sizeof(type_t)) : NULL;
 	for (i = 0; i < arg_count; i++) {
@@ -3284,7 +3448,7 @@ static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t
 	}
 
 	if (set == NULL) {
-		compiler_error(compiler, call_node->line, call_node->column, "compiler::undefined-function", "undefined function '%.*s'", (int)name_length, name);
+		compiler_error(compiler, name_line, name_column, (int)name_length, "compiler::undefined-function", "undefined function '%.*s'", (int)name_length, name);
 		free(arg_types);
 		return type_void();
 	}
@@ -3301,7 +3465,7 @@ static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t
 		}
 		arg_list[pos] = '\0';
 
-		compiler_error(compiler, call_node->line, call_node->column, "compiler::no-matching-overload", "no overload of '%.*s' takes (%s)", (int)name_length, name, arg_list);
+		compiler_error(compiler, name_line, name_column, (int)name_length, "compiler::no-matching-overload", "no overload of '%.*s' takes (%s)", (int)name_length, name, arg_list);
 		free(arg_types);
 		return type_void();
 	}
@@ -3309,9 +3473,9 @@ static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t
 
 	if (resolved->is_deprecated) {
 		if (resolved->deprecated_message_length > 0) {
-			compiler_warning(compiler, call_node->line, call_node->column, "compiler::deprecated-call", "'%.*s' is deprecated: %.*s", (int)name_length, name, (int)resolved->deprecated_message_length, resolved->deprecated_message);
+			compiler_warning(compiler, name_line, name_column, (int)name_length, "compiler::deprecated-call", "'%.*s' is deprecated: %.*s", (int)name_length, name, (int)resolved->deprecated_message_length, resolved->deprecated_message);
 		} else {
-			compiler_warning(compiler, call_node->line, call_node->column, "compiler::deprecated-call", "'%.*s' is deprecated", (int)name_length, name);
+			compiler_warning(compiler, name_line, name_column, (int)name_length, "compiler::deprecated-call", "'%.*s' is deprecated", (int)name_length, name);
 		}
 	}
 
@@ -3326,68 +3490,292 @@ static type_t finish_resolved_call(compiler_t *compiler, const signature_table_t
 	return resolved->has_return_type ? resolved->return_type : type_void();
 }
 
-/* Emits one print(name)+call+pop per @test-tagged top-level function, in
-   declaration order, in place of the usual single call to main(). See
-   compiler_compile()'s run_tests_mode parameter. main() itself is still
-   required to exist (checked unconditionally, same as always) but is
-   never called in this mode. An assert() failure inside any test aborts
-   the whole run immediately with its usual diagnostic and backtrace,
-   exactly like any other paweli program; nothing here tries to catch or
-   continue past that. Reaching the end with no aborts is what "every
-   test passed" means. */
-static void emit_test_runner(compiler_t *script, const ast_node_t *program, const signature_table_t *file_signatures) {
-	size_t i;
+/* counter += 1, counter being one of the two script-scope locals
+   emit_test_runner() declares for its running pass/fail tally. Mirrors
+   compile_foreach_stmt()'s own $for_index increment
+   (GET_LOCAL/CONSTANT/ADD/SET_LOCAL/POP). */
+static void emit_local_increment(compiler_t *script, int slot, int line, int column) {
+	emit_bytes(script, OP_GET_LOCAL, (uint8_t)slot, line, column);
+	emit_constant(script, value_int(1), line, column);
+	emit_byte(script, OP_ADD, line, column);
+	emit_bytes(script, OP_SET_LOCAL, (uint8_t)slot, line, column);
+	emit_byte(script, OP_POP, line, column);
+}
+
+/* True (and *out_sig set) iff fn_node is a well-formed @test function:
+   decorated "test", with a signature that resolved cleanly (a malformed
+   one, e.g. nonzero arity, was already reported by apply_decorators();
+   had_error is already set, so the whole compile fails regardless --
+   this just skips emitting a call against the wrong overload). Shared
+   by emit_test_runner()'s own two passes (counting, then emitting), so
+   "how many tests" and "which ones" can never disagree. */
+static bool resolve_test_function(const ast_node_t *fn_node, const signature_table_t *file_signatures, const signature_t **out_sig) {
 	size_t d;
-	const ast_node_t *fn_node;
 	const ast_node_t *decorator_node;
 	token_t dname;
 	token_t fname;
-	bool is_test;
-	const signature_t *test_sig;
-	char buf[300];
-	int len;
-	obj_string_t *label;
 
+	for (d = 0; d < fn_node->as.function_decl.decorators.count; d++) {
+		decorator_node = fn_node->as.function_decl.decorators.items[d];
+		dname = decorator_node->as.decorator.name;
+		if (dname.length == 4 && memcmp(dname.start, "test", 4) == 0) {
+			fname = fn_node->as.function_decl.name;
+			return signature_table_resolve(file_signatures, fname.start, fname.length, NULL, 0, out_sig) == SIGNATURE_MATCH_OK;
+		}
+	}
+	return false;
+}
+
+/* Emits a `$test_progress(current, total, name)` call: --run-tests'
+   per-test status line, a native (src/stdlib/stdlib.c) rather than
+   hand-rolled bytecode because it needs an isatty() check (to decide
+   between overwriting one line in place on a real terminal vs. the
+   plain one-line-per-test scripts/run_tests.sh's own pass-count check
+   greps for) that has no equivalent in the language itself. current
+   and total are both compile-time constants: the loop emitting one
+   call per test is fully unrolled, so "how many tests deep are we"
+   never needs a runtime counter. */
+static void emit_test_progress(compiler_t *script, int current, int total, const char *name, size_t name_length, int line, int column) {
+	obj_string_t *name_str;
+
+	name_str = object_new_string(script->heap, script->strings, name, name_length);
+	emit_name_op_str(script, OP_GET_GLOBAL, "$test_progress", 14, line, column);
+	emit_constant(script, value_int(current), line, column);
+	emit_constant(script, value_int(total), line, column);
+	emit_constant(script, value_obj((obj_t *)name_str), line, column);
+	emit_bytes(script, OP_CALL, 3, line, column);
+	emit_byte(script, OP_POP, line, column);
+}
+
+/* Emits one "running: NAME" progress update, then a call to the
+   @test-tagged function wrapped in the same try/catch machinery
+   compile_try_expr() uses for a source-level `try { ... } catch (msg:
+   string) { ... }` (OP_CLOSURE + OP_TRY_CALL, see that function's own
+   comment for the bytecode shape), in place of the usual single call
+   to main(). See compiler_compile()'s run_tests_mode parameter. main()
+   itself is still required to exist (checked unconditionally, same as
+   always) but is never called in this mode.
+
+   Catching every test's own failure here, rather than letting it abort
+   the whole run the way an uncaught error normally would, is what makes
+   this "every test runs, not just every test up to the first failure"
+   possible. The caught message is whatever vm_runtime_error() raised it
+   with (e.g. "assertion failed: x == y"), no file/line/caret/backtrace
+   attached: that context only ever gets computed by walking live call
+   frames at the moment an *uncaught* error is reported
+   (vm_print_uncaught_error()), and OP_TRY_CALL has already unwound
+   those frames by the time a catch handler runs. A failing test's name
+   is still printed right next to its message, which is normally enough
+   to find it again; re-running just that one test file gets the full
+   diagnostic back.
+
+   Once every test has run, prints a one-line pass/fail summary and, if
+   anything failed, OP_THROWs a final summary error so this whole
+   run_tests_mode script ends the same way an ordinary uncaught error
+   would: nonzero exit code, reported via vm_print_uncaught_error() in
+   main.c, with no VM-level changes needed to get there. */
+static void emit_test_runner(compiler_t *script, const ast_node_t *program, const signature_table_t *file_signatures) {
+	size_t i;
+	const ast_node_t *fn_node;
+	token_t fname;
+	const signature_t *test_sig;
+	int total_tests;
+	int test_index;
+	int pass_slot;
+	int fail_slot;
+	int msg_slot;
+	size_t try_call_offset;
+	size_t end_jump_offset;
+	size_t skip_throw_jump;
+	compiler_t test_body;
+	obj_string_t *failure_msg;
+
+	total_tests = 0;
+	for (i = 0; i < program->as.program.functions.count; i++) {
+		if (resolve_test_function(program->as.program.functions.items[i], file_signatures, &test_sig)) {
+			total_tests++;
+		}
+	}
+
+	{
+		char header[64];
+		int header_len;
+
+		header_len = snprintf(header, sizeof(header), "Found %d Tests, running now.", total_tests);
+		emit_name_op_str(script, OP_GET_GLOBAL, "print", 5, program->line, program->column);
+		emit_constant(script, value_obj((obj_t *)object_new_string(script->heap, script->strings, header, (size_t)(header_len > 0 ? header_len : 0))), program->line, program->column);
+		emit_bytes(script, OP_CALL, 1, program->line, program->column);
+		emit_byte(script, OP_POP, program->line, program->column);
+	}
+
+	// vm_run() pushes the script's own function value before this chunk's
+	// first instruction ever runs, and points this outermost frame's
+	// slots straight at it (frame->slots == vm->stack, no "past the
+	// callee" offset the way call_value() sets up every other frame --
+	// see its own comment on the OP_RETURN case for stop_frame_count ==
+	// 0). Compile-time slot 0 is otherwise always assumed free (every
+	// other compiler_t, including this same `script`'s own file-level
+	// signature/global setup, only ever reaches globals via
+	// OP_DEFINE_GLOBAL/OP_GET_GLOBAL, never a local slot), so nothing
+	// before this ever had to account for that reservation. Declaring
+	// this placeholder first (no matching push: the value it aliases is
+	// already sitting there) burns exactly that slot, so $test_pass_count
+	// below lands on the runtime index its own OP_CONSTANT actually
+	// pushed to.
+	if (declare_local(script, synthetic_token("$test_script_self"), type_void(), program->line)) {
+		mark_initialized(script);
+	}
+
+	emit_constant(script, value_int(0), program->line, program->column);
+	if (declare_local(script, synthetic_token("$test_pass_count"), type_int(), program->line)) {
+		mark_initialized(script);
+	}
+	pass_slot = script->local_count - 1;
+
+	emit_constant(script, value_int(0), program->line, program->column);
+	if (declare_local(script, synthetic_token("$test_fail_count"), type_int(), program->line)) {
+		mark_initialized(script);
+	}
+	fail_slot = script->local_count - 1;
+
+	test_index = 0;
 	for (i = 0; i < program->as.program.functions.count; i++) {
 		fn_node = program->as.program.functions.items[i];
 
-		is_test = false;
-		for (d = 0; d < fn_node->as.function_decl.decorators.count; d++) {
-			decorator_node = fn_node->as.function_decl.decorators.items[d];
-			dname = decorator_node->as.decorator.name;
-			if (dname.length == 4 && memcmp(dname.start, "test", 4) == 0) {
-				is_test = true;
-				break;
-			}
-		}
-		if (!is_test) {
+		if (!resolve_test_function(fn_node, file_signatures, &test_sig)) {
 			continue;
 		}
-
 		fname = fn_node->as.function_decl.name;
-		if (signature_table_resolve(file_signatures, fname.start, fname.length, NULL, 0, &test_sig) != SIGNATURE_MATCH_OK) {
-			// A malformed @test signature (nonzero arity) was already
-			// reported by apply_decorators(); had_error is already set,
-			// so this whole compile is going to fail regardless. Skip
-			// emitting a call for it rather than resolving against the
-			// wrong overload.
-			continue;
-		}
+		test_index++;
 
-		len = snprintf(buf, sizeof(buf), "running: %.*s", (int)fname.length, fname.start);
-		label = object_new_string(script->heap, script->strings, buf, (size_t)(len > 0 ? len : 0));
-		emit_name_op_str(script, OP_GET_GLOBAL, "print", 5, fn_node->line, fn_node->column);
-		emit_constant(script, value_obj((obj_t *)label), fn_node->line, fn_node->column);
-		emit_bytes(script, OP_CALL, 1, fn_node->line, fn_node->column);
-		emit_byte(script, OP_POP, fn_node->line, fn_node->column);
+		emit_test_progress(script, test_index, total_tests, fname.start, fname.length, fn_node->line, fn_node->column);
 
-		emit_name_op_str(script, OP_GET_GLOBAL, test_sig->mangled_name, strlen(test_sig->mangled_name), fn_node->line, fn_node->column);
+		// The try-body: a bare 0-arg closure that calls the test and
+		// discards its result, exactly what compile_closure_body() would
+		// produce for a `{ NAME(); }` block, minus the AST it would
+		// otherwise need to compile that block from. Field-for-field the
+		// same setup compile_closure_body() itself uses.
+		test_body.function = object_new_function(script->heap);
+		test_body.function->name = object_new_string(script->heap, script->strings, "<test>", 6);
+		test_body.function->arity = 0;
+		test_body.function->globals = script->function->globals;
+		test_body.function->module = script->function->module;
+		test_body.function->filename = script->filename;
+		test_body.function->source = script->source;
+
+		test_body.heap = script->heap;
+		test_body.strings = script->strings;
+		test_body.filename = script->filename;
+		test_body.source = script->source;
+		test_body.had_error = false;
+		test_body.is_module_def = script->is_module_def;
+		test_body.compiling_main = false;
+		test_body.return_type = type_void();
+		test_body.has_return_type = false;
+		test_body.file_signatures = script->file_signatures;
+		test_body.home_module = script->home_module;
+		test_body.out_exports = script->out_exports;
+		test_body.imported_modules = script->imported_modules;
+		test_body.imported_module_count = script->imported_module_count;
+		test_body.structs = script->structs;
+		test_body.globals = script->globals;
+		test_body.local_count = 0;
+		test_body.scope_depth = 0;
+		memset(test_body.local_reg_seen, 0, sizeof(test_body.local_reg_seen));
+		memset(test_body.local_reg_eligible, 0, sizeof(test_body.local_reg_eligible));
+		memset(test_body.local_reg_decl_end, 0, sizeof(test_body.local_reg_decl_end));
+		memset(test_body.local_reg_dead_at, 0, sizeof(test_body.local_reg_dead_at));
+		test_body.local_slot_high_water = 0;
+		test_body.enclosing = script;
+		test_body.upvalue_count = 0;
+		test_body.loops = NULL;
+		test_body.loop_count = 0;
+		test_body.loop_capacity = 0;
+
+		emit_name_op_str(&test_body, OP_GET_GLOBAL, test_sig->mangled_name, strlen(test_sig->mangled_name), fn_node->line, fn_node->column);
+		emit_bytes(&test_body, OP_CALL, 0, fn_node->line, fn_node->column);
+		emit_byte(&test_body, OP_POP, fn_node->line, fn_node->column);
+		emit_byte(&test_body, OP_NULL, fn_node->line, fn_node->column);
+		emit_byte(&test_body, OP_RETURN, fn_node->line, fn_node->column);
+
+		finalize_local_reg_info(&test_body);
+		script->had_error = script->had_error || test_body.had_error;
+		free(test_body.loops);
+
+		// A test that prints (tests/suite/basic.pw's test_print(), which
+		// exists purely to prove print() works) would otherwise
+		// interleave its own stdout with the [OK]/[FAIL] line and the
+		// live progress line's in-place redraw below. Suppressed for the
+		// whole reentrant call, restored right before either report line
+		// prints, so the report itself is never swallowed too.
+		emit_name_op_str(script, OP_GET_GLOBAL, "$test_output_suppress_begin", 27, fn_node->line, fn_node->column);
 		emit_bytes(script, OP_CALL, 0, fn_node->line, fn_node->column);
 		emit_byte(script, OP_POP, fn_node->line, fn_node->column);
+
+		emit_closure(script, test_body.function, &test_body, fn_node->line, fn_node->column);
+
+		try_call_offset = emit_jump(script, OP_TRY_CALL, fn_node->line, fn_node->column);
+
+		// Success path: falls straight through from OP_TRY_CALL with the
+		// try-body's (always null) return value on top of the stack.
+		emit_byte(script, OP_POP, fn_node->line, fn_node->column);
+		emit_name_op_str(script, OP_GET_GLOBAL, "$test_output_suppress_end", 25, fn_node->line, fn_node->column);
+		emit_bytes(script, OP_CALL, 0, fn_node->line, fn_node->column);
+		emit_byte(script, OP_POP, fn_node->line, fn_node->column);
+		emit_name_op_str(script, OP_GET_GLOBAL, "$test_report_pass", 17, fn_node->line, fn_node->column);
+		emit_constant(script, value_obj((obj_t *)object_new_string(script->heap, script->strings, fname.start, fname.length)), fn_node->line, fn_node->column);
+		emit_bytes(script, OP_CALL, 1, fn_node->line, fn_node->column);
+		emit_byte(script, OP_POP, fn_node->line, fn_node->column);
+		emit_local_increment(script, pass_slot, fn_node->line, fn_node->column);
+		end_jump_offset = emit_jump(script, OP_JUMP, fn_node->line, fn_node->column);
+
+		// Catch path: OP_TRY_CALL landed here with the failure's message
+		// pushed in place of a return value.
+		patch_jump(script, try_call_offset, fn_node->line);
+		begin_scope(script);
+		if (declare_local(script, synthetic_token("$test_msg"), type_string(), fn_node->line)) {
+			mark_initialized(script);
+		}
+		msg_slot = script->local_count - 1;
+
+		emit_name_op_str(script, OP_GET_GLOBAL, "$test_output_suppress_end", 25, fn_node->line, fn_node->column);
+		emit_bytes(script, OP_CALL, 0, fn_node->line, fn_node->column);
+		emit_byte(script, OP_POP, fn_node->line, fn_node->column);
+		emit_name_op_str(script, OP_GET_GLOBAL, "$test_report_failure", 20, fn_node->line, fn_node->column);
+		emit_constant(script, value_obj((obj_t *)object_new_string(script->heap, script->strings, fname.start, fname.length)), fn_node->line, fn_node->column);
+		emit_bytes(script, OP_GET_LOCAL, (uint8_t)msg_slot, fn_node->line, fn_node->column);
+		emit_bytes(script, OP_CALL, 2, fn_node->line, fn_node->column);
+		emit_byte(script, OP_POP, fn_node->line, fn_node->column);
+
+		emit_local_increment(script, fail_slot, fn_node->line, fn_node->column);
+		end_scope(script, fn_node->line, fn_node->column);
+
+		patch_jump(script, end_jump_offset, fn_node->line);
 	}
+
+	emit_name_op_str(script, OP_GET_GLOBAL, "$test_report_summary", 20, program->line, program->column);
+	emit_constant(script, value_int(total_tests), program->line, program->column);
+	emit_bytes(script, OP_GET_LOCAL, (uint8_t)pass_slot, program->line, program->column);
+	emit_bytes(script, OP_GET_LOCAL, (uint8_t)fail_slot, program->line, program->column);
+	emit_bytes(script, OP_CALL, 3, program->line, program->column);
+	emit_byte(script, OP_POP, program->line, program->column);
+
+	// if ($test_fail_count > 0) throw "..."; -- same JUMP_IF_FALSE shape
+	// compile_if_stmt() uses, condition popped on both the taken and the
+	// not-taken path.
+	emit_bytes(script, OP_GET_LOCAL, (uint8_t)fail_slot, program->line, program->column);
+	emit_constant(script, value_int(0), program->line, program->column);
+	emit_byte(script, OP_GREATER, program->line, program->column);
+	skip_throw_jump = emit_jump(script, OP_JUMP_IF_FALSE, program->line, program->column);
+	emit_byte(script, OP_POP, program->line, program->column);
+	failure_msg = object_new_string(script->heap, script->strings, "one or more tests failed", 25);
+	emit_constant(script, value_obj((obj_t *)failure_msg), program->line, program->column);
+	emit_byte(script, OP_THROW, program->line, program->column);
+	patch_jump(script, skip_throw_jump, program->line);
+	emit_byte(script, OP_POP, program->line, program->column);
 }
 
-obj_function_t *compiler_compile(const ast_node_t *program, const char *filename, const char *source, gc_heap_t *heap, table_t *strings, table_t *file_globals, obj_module_t *home_module, signature_table_t *out_exports, const module_unit_t *imported_module, struct_registry_t **out_structs, bool run_tests_mode) {
+obj_function_t *compiler_compile(const ast_node_t *program, const char *filename, const char *source, gc_heap_t *heap, table_t *strings, table_t *file_globals, obj_module_t *home_module, signature_table_t *out_exports, const module_unit_t *const *imported_modules, size_t imported_module_count, struct_registry_t **out_structs, bool run_tests_mode) {
 	compiler_t script;
 	size_t i;
 	const ast_node_t *fn_node;
@@ -3404,7 +3792,7 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 	ensure_native_signatures();
 
 	had_error = false;
-	is_module_def = program->as.program.directive != NULL && program->as.program.directive->kind == AST_MODULE_DEF;
+	is_module_def = program->as.program.module_def != NULL;
 
 	signature_table_init(&file_signatures);
 	// Ordinarily freed at the end of this call, same as file_signatures;
@@ -3451,7 +3839,8 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 	script.file_signatures = &file_signatures;
 	script.home_module = home_module;
 	script.out_exports = out_exports;
-	script.imported_module = imported_module;
+	script.imported_modules = imported_modules;
+	script.imported_module_count = imported_module_count;
 	script.structs = structs;
 	script.globals = &globals;
 	script.local_count = 0;
@@ -3459,6 +3848,7 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 	memset(script.local_reg_seen, 0, sizeof(script.local_reg_seen));
 	memset(script.local_reg_eligible, 0, sizeof(script.local_reg_eligible));
 	memset(script.local_reg_decl_end, 0, sizeof(script.local_reg_decl_end));
+	memset(script.local_reg_dead_at, 0, sizeof(script.local_reg_dead_at));
 	script.local_slot_high_water = 0;
 	script.enclosing = NULL;
 	script.upvalue_count = 0;
@@ -3468,7 +3858,7 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 
 	// Struct declarations resolve before any signature: a function's
 	// parameter or return type may name a struct.
-	register_structs(&script, program, structs, imported_module != NULL ? imported_module->exported_structs : NULL);
+	register_structs(&script, program, structs, imported_modules, imported_module_count);
 	had_error = had_error || script.had_error;
 
 	// This file's global variables' names/types resolve next, before any
@@ -3504,7 +3894,7 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 			continue;
 		}
 		fn_node = program->as.program.functions.items[i];
-		compile_function_decl(fn_node, signatures[i], heap, strings, filename, source, is_module_def, home_module, out_exports, &file_signatures, imported_module, structs, &globals, false, &had_error);
+		compile_function_decl(fn_node, signatures[i], heap, strings, filename, source, is_module_def, home_module, out_exports, &file_signatures, imported_modules, imported_module_count, structs, &globals, false, &had_error);
 
 		emit_constant(&script, value_obj((obj_t *)signatures[i]->function), fn_node->line, fn_node->column);
 		emit_name_op_str(&script, OP_DEFINE_GLOBAL, signatures[i]->mangled_name, strlen(signatures[i]->mangled_name), fn_node->line, fn_node->column);
@@ -3535,7 +3925,7 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 
 		initializer_type = compile_expr_typed(&script, global_node->as.var_decl.initializer, &def->type);
 		if (!type_is_assignable(def->type, initializer_type)) {
-			compiler_error(&script, global_node->line, global_node->column, "compiler::type-mismatch", "cannot initialize a %s variable with a %s value", type_to_string(def->type), type_to_string(initializer_type));
+			compiler_error(&script, global_node->line, global_node->column, 0, "compiler::type-mismatch", "cannot initialize a %s variable with a %s value", type_to_string(def->type), type_to_string(initializer_type));
 		}
 
 		emit_name_op_str(&script, OP_DEFINE_GLOBAL, global_node->as.var_decl.name.start, global_node->as.var_decl.name.length, global_node->line, global_node->column);
@@ -3551,11 +3941,11 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 		if (struct_def == NULL) {
 			continue;
 		}
-		compile_struct_functions(struct_node, struct_def, heap, strings, filename, source, is_module_def, home_module, out_exports, &file_signatures, imported_module, structs, &globals, &had_error);
+		compile_struct_functions(struct_node, struct_def, heap, strings, filename, source, is_module_def, home_module, out_exports, &file_signatures, imported_modules, imported_module_count, structs, &globals, &had_error);
 	}
 
 	if (signature_table_resolve(&file_signatures, "main", 4, NULL, 0, &main_sig) != SIGNATURE_MATCH_OK) {
-		compiler_error(&script, program->line, program->column, "compiler::missing-main", "no 'main' function found");
+		compiler_error(&script, program->line, program->column, 0, "compiler::missing-main", "no 'main' function found");
 		main_sig = NULL;
 	}
 

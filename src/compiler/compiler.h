@@ -38,12 +38,14 @@
    module's exports are already fully wired into home_module->members by
    the time this returns, with no runtime step needed to populate them.
 
-   imported_module is non-NULL when program itself has a #module
-   directive: the already-compiled unit for what it imports (see
-   module_compile()), consulted to type-check and resolve every
-   `<local_name>.member(...)` call in program, and (via its own
-   exported_structs) every unqualified struct-typed name that isn't
-   declared locally. NULL if program has no #module directive.
+   imported_modules/imported_module_count cover every #module import
+   program itself has (zero or more): each entry is the already-compiled
+   unit for one import (see module_compile()), consulted to type-check
+   and resolve every `<local_name>.member(...)` call in program, and (via
+   its own exported_structs) every unqualified struct-typed name that
+   isn't declared locally. Two different imports exporting the same
+   struct name unqualified is an ambiguous-reference compile error, not
+   first-one-wins.
 
    out_structs, like out_exports, is only meaningful when program has a
    #moduledef directive: on success it receives ownership of this file's
@@ -65,7 +67,7 @@
    compiled script's top-level code calls every @test-tagged top-level
    function instead of main(); main() is still required to exist
    either way, just not called in this mode. */
-obj_function_t *compiler_compile(const ast_node_t *program, const char *filename, const char *source, gc_heap_t *heap, table_t *strings, table_t *file_globals, obj_module_t *home_module, signature_table_t *out_exports, const module_unit_t *imported_module, struct_registry_t **out_structs, bool run_tests_mode);
+obj_function_t *compiler_compile(const ast_node_t *program, const char *filename, const char *source, gc_heap_t *heap, table_t *strings, table_t *file_globals, obj_module_t *home_module, signature_table_t *out_exports, const module_unit_t *const *imported_modules, size_t imported_module_count, struct_registry_t **out_structs, bool run_tests_mode);
 
 /* Frees the process-lifetime native signature tables (print/assert/
    stdlib.*), built lazily on first use by compiler_compile(). Call once,

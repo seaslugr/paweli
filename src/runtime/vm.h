@@ -78,8 +78,8 @@ typedef struct vm {
 	bool gc_stress;
 
 	const char *filename;
-	/* Whole file's null-terminated text, kept only to render source
-	   snippets in diagnostics. vm_t does not own it. */
+	// Whole file's null-terminated text, kept only to render source
+	// snippets in diagnostics. vm_t does not own it.
 	const char *source;
 
 	// Set by vm_runtime_error() on every failure, whether or not

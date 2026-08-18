@@ -104,7 +104,15 @@ struct ast_node {
 
 	union {
 		struct {
-			ast_node_t *directive;
+			// At most one, must precede every `imports` entry (enforced by
+			// the parser, see parser_parse_program()). NULL for a file with
+			// no `#moduledef`.
+			ast_node_t *module_def;
+			// Zero or more AST_MODULE_IMPORT nodes, one per `#module` line.
+			// A moduledef file can carry its own imports now (that's what
+			// makes a transitive import chain possible), unlike the old
+			// single-directive design.
+			ast_list_t imports;
 			ast_list_t functions;
 			ast_list_t structs;
 			// Top-level global variable declarations (AST_VAR_DECL nodes,
@@ -336,7 +344,7 @@ void ast_list_init(ast_list_t *list);
 void ast_list_push(ast_list_t *list, ast_node_t *node);
 void ast_list_free(ast_list_t *list);
 
-ast_node_t *ast_new_program(ast_node_t *directive);
+ast_node_t *ast_new_program(void);
 ast_node_t *ast_new_module_import(token_t name, int line, int column);
 ast_node_t *ast_new_module_def(token_t name, int line, int column);
 ast_node_t *ast_new_function_decl(token_t name, bool has_return_type, type_ref_t return_type, ast_node_t *body, int line, int column);

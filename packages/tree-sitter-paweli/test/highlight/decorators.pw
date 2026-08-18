@@ -1,0 +1,10 @@
+@test
+// <- @attribute
+fn foo() {
+}
+
+@deprecated
+// <- @attribute
+("use bar instead")
+fn bar() {
+}

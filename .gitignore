@@ -2,8 +2,10 @@ build/
 compile_commands.json
 docs/design.md
 AGENTS.md
+book/book/
 
 # Compiled outputs: bytecode containers and --bin executables.
 *.paw
 basic
 hello
+docs/todo.md

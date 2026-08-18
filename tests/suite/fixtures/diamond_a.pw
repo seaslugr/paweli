@@ -1,0 +1,10 @@
+#moduledef "fixtures/diamond_a"
+#module "diamond_shared"
+
+fn from_a(int v) -> Shared {
+	return diamond_shared.make(v);
+}
+
+fn main() {
+	export from_a;
+}

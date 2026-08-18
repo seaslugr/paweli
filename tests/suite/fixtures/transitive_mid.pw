@@ -1,0 +1,12 @@
+#moduledef "fixtures/transitive_mid"
+#module "transitive_leaf"
+
+// Uses transitive_leaf internally; nothing outside this file gets to
+// reach transitive_leaf.triple() directly, only through sextuple().
+fn sextuple(int x) -> int {
+	return transitive_leaf.triple(x) * 2;
+}
+
+fn main() {
+	export sextuple;
+}

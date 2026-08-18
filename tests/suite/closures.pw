@@ -1,0 +1,75 @@
+#moduledef "closures"
+
+fn make_counter() -> int {
+	int count = 0;
+
+	fn increment() -> int {
+		count = count + 1;
+		return count;
+	}
+
+	assert(increment() == 1);
+	assert(increment() == 2);
+	assert(increment() == 3);
+	return count;
+}
+
+fn test_counter_closure() {
+	assert(make_counter() == 3);
+}
+
+fn make_two_closures_same_capture() {
+	int shared = 0;
+
+	fn bump_a() {
+		shared = shared + 1;
+	}
+
+	fn bump_b() {
+		shared = shared + 10;
+	}
+
+	bump_a();
+	bump_b();
+	bump_a();
+
+	assert(shared == 12, "two closures over the same local must share one upvalue");
+}
+
+fn test_shared_upvalue() {
+	make_two_closures_same_capture();
+}
+
+fn capture_param(int base) -> int {
+	fn add_base(int x) -> int {
+		return x + base;
+	}
+
+	return add_base(5) + add_base(10);
+}
+
+fn test_capture_parameter() {
+	assert(capture_param(100) == 215);
+}
+
+fn fib(int n) -> int {
+	fn go(int k) -> int {
+		if (k < 2) {
+			return k;
+		}
+		return go(k - 1) + go(k - 2);
+	}
+
+	return go(n);
+}
+
+fn test_recursive_nested_closure() {
+	assert(fib(10) == 55);
+}
+
+fn main() {
+	export test_counter_closure;
+	export test_shared_upvalue;
+	export test_capture_parameter;
+	export test_recursive_nested_closure;
+}

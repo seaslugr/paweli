@@ -11,8 +11,8 @@ typedef struct {
 	token_t previous;
 	token_t current;
 	const char *filename;
-	/* Whole file's null-terminated text, kept only to render source
-	   snippets in diagnostics. parser_t does not own it. */
+	// Whole file's null-terminated text, kept only to render source
+	// snippets in diagnostics. parser_t does not own it.
 	const char *source;
 	bool had_error;
 	bool panic_mode;

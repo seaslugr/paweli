@@ -1,0 +1,44 @@
+#moduledef "strings"
+
+fn test_split() {
+	string s = "3 + 4";
+	string[] tokens = stdlib.split(s, " ");
+	assert(stdlib.length(tokens) == 3);
+	assert(tokens[0] == "3");
+	assert(tokens[1] == "+");
+	assert(tokens[2] == "4");
+
+	string[] collapsed = stdlib.split("a   b   c", " ");
+	assert(stdlib.length(collapsed) == 3);
+	assert(collapsed[0] == "a");
+	assert(collapsed[1] == "b");
+	assert(collapsed[2] == "c");
+
+	string[] multi_char = stdlib.split("one::two::three", "::");
+	assert(stdlib.length(multi_char) == 3);
+	assert(multi_char[1] == "two");
+}
+
+fn test_indexing() {
+	string s = "3 + 4";
+	assert(s[0] == "3");
+	assert(s[2] == "+");
+	assert(s[4] == "4");
+	assert(stdlib.length(s[0]) == 1);
+}
+
+// The character-iteration half of what used to be for_each.pw; the
+// array-iteration half lives in arrays.pw instead.
+fn test_foreach_characters() {
+	string chars = "";
+	for (string c : "abc") {
+		chars = stdlib.concat(chars, c);
+	}
+	assert(chars == "abc", "foreach over a string iterates its characters");
+}
+
+fn main() {
+	export test_split;
+	export test_indexing;
+	export test_foreach_characters;
+}

@@ -1,0 +1,12 @@
+// Two different imports both export a struct named "Item": referencing
+// it unqualified is ambiguous, a compile error, not "first import wins"
+// (see compiler.c's compiler::ambiguous-struct-name diagnostic).
+// Intentionally never expected to compile; see module_errors.pw for the
+// convention this follows.
+
+#module "fixtures/ambiguous_a"
+#module "fixtures/ambiguous_b"
+
+fn main() {
+	Item i = Item { id: 1 };
+}

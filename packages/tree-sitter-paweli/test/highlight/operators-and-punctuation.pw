@@ -1,0 +1,44 @@
+fn calc
+(int a, int b)
+-> int
+{
+	int sum = a
+	+
+	// <- @operator
+	b
+	;
+	bool ok = a
+	==
+	// <- @operator
+	b
+	;
+	return sum
+	;
+}
+// <- @punctuation.bracket
+
+fn call_it
+(
+// <- @punctuation.bracket
+)
+{
+	calc(1, 2)
+	;
+	int[] xs = [1]
+	;
+	xs
+	[
+	// <- @punctuation.bracket
+	0
+	]
+	;
+}
+
+struct Pair
+{
+	int a
+	,
+	// <- @punctuation.delimiter
+	int b
+	;
+}

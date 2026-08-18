@@ -1,0 +1,41 @@
+#moduledef "stdlib_tests"
+
+fn test_abs() {
+	assert(stdlib.abs(-7) == 7);
+	assert(stdlib.abs(7) == 7);
+}
+
+fn test_min_max() {
+	assert(stdlib.max(3, 9) == 9);
+	assert(stdlib.min(3, 9) == 3);
+}
+
+fn test_sqrt() {
+	assert(stdlib.sqrt(16.0) == 4.0);
+	assert(stdlib.sqrt(2.0) > 1.4 && stdlib.sqrt(2.0) < 1.5);
+}
+
+fn test_string_length_case_concat() {
+	assert(stdlib.length("paweli") == 6);
+	assert(stdlib.to_upper("paweli") == "PAWELI");
+	assert(stdlib.concat("hello, ", "paweli") == "hello, paweli");
+}
+
+fn test_to_string() {
+	assert(stdlib.to_string(42) == "42");
+	assert(stdlib.to_string(true) == "true");
+}
+
+fn test_to_int() {
+	assert(stdlib.to_int("42") == 42);
+	assert(stdlib.to_int("not a number") == 0, "unparseable input should fall back to 0");
+}
+
+fn main() {
+	export test_abs;
+	export test_min_max;
+	export test_sqrt;
+	export test_string_length_case_concat;
+	export test_to_string;
+	export test_to_int;
+}

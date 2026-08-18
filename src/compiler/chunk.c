@@ -21,6 +21,7 @@ void chunk_init(chunk_t *chunk) {
 	chunk->local_reg_eligible = NULL;
 	chunk->local_reg_types = NULL;
 	chunk->local_reg_decl_end = NULL;
+	chunk->local_reg_dead_at = NULL;
 	chunk->local_slot_count = 0;
 }
 
@@ -31,6 +32,7 @@ void chunk_free(chunk_t *chunk) {
 	free(chunk->constants);
 	free(chunk->local_reg_eligible);
 	free(chunk->local_reg_decl_end);
+	free(chunk->local_reg_dead_at);
 	free(chunk->local_reg_types);
 	chunk_init(chunk);
 }
@@ -72,13 +74,13 @@ static size_t disassemble_byte_operand(const chunk_t *chunk, const char *name, s
 }
 
 static size_t disassemble_constant(const chunk_t *chunk, const char *name, size_t offset, FILE *out) {
-	uint8_t index;
+	uint16_t index;
 
-	index = chunk->code[offset + 1];
+	index = (uint16_t)((chunk->code[offset + 1] << 8) | chunk->code[offset + 2]);
 	fprintf(out, "%-16s %4d '", name, index);
 	value_print(chunk->constants[index], out);
 	fputs("'\n", out);
-	return offset + 2;
+	return offset + 3;
 }
 
 static size_t disassemble_jump(const chunk_t *chunk, const char *name, int sign, size_t offset, FILE *out) {
@@ -90,40 +92,40 @@ static size_t disassemble_jump(const chunk_t *chunk, const char *name, int sign,
 	return offset + 3;
 }
 
-// OP_STRUCT's layout: opcode, a constant-pool index (the type name), then
-// a plain byte (the field count), the same two-part shape as
-// emit_name_op_str() + a following emit_byte() in the compiler.
+/* OP_STRUCT's layout: opcode, a constant-pool index (the type name), then
+   a plain byte (the field count), the same two-part shape as
+   emit_name_op_str() + a following emit_byte() in the compiler. */
 static size_t disassemble_constant_and_byte(const chunk_t *chunk, const char *name, size_t offset, FILE *out) {
-	uint8_t index;
+	uint16_t index;
 	uint8_t count;
 
-	index = chunk->code[offset + 1];
-	count = chunk->code[offset + 2];
+	index = (uint16_t)((chunk->code[offset + 1] << 8) | chunk->code[offset + 2]);
+	count = chunk->code[offset + 3];
 	fprintf(out, "%-16s %4d '", name, index);
 	value_print(chunk->constants[index], out);
 	fprintf(out, "' %d fields\n", count);
-	return offset + 3;
+	return offset + 4;
 }
 
-// OP_CLOSURE is the only variable-length instruction in this format: a
-// constant index, an upvalue count, then that many (is_local, index)
-// byte pairs, one per upvalue descriptor. See chunk.h's own comment
-// on OP_CLOSURE for what each pair means.
+/* OP_CLOSURE is the only variable-length instruction in this format: a
+   constant index, an upvalue count, then that many (is_local, index)
+   byte pairs, one per upvalue descriptor. See chunk.h's own comment
+   on OP_CLOSURE for what each pair means. */
 static size_t disassemble_closure(const chunk_t *chunk, size_t offset, FILE *out) {
-	uint8_t const_index;
+	uint16_t const_index;
 	uint8_t upvalue_count;
 	uint8_t i;
 	size_t pos;
 	uint8_t is_local;
 	uint8_t index;
 
-	const_index = chunk->code[offset + 1];
-	upvalue_count = chunk->code[offset + 2];
+	const_index = (uint16_t)((chunk->code[offset + 1] << 8) | chunk->code[offset + 2]);
+	upvalue_count = chunk->code[offset + 3];
 	fprintf(out, "%-16s %4d '", "OP_CLOSURE", const_index);
 	value_print(chunk->constants[const_index], out);
 	fprintf(out, "' %d upvalues\n", upvalue_count);
 
-	pos = offset + 3;
+	pos = offset + 4;
 	for (i = 0; i < upvalue_count; i++) {
 		is_local = chunk->code[pos];
 		index = chunk->code[pos + 1];

@@ -139,14 +139,14 @@ bool table_delete(table_t *table, obj_string_t *key) {
 	return true;
 }
 
-// Rebuilds the table from scratch containing only marked keys, instead of
-// tombstoning dead ones in place like table_delete(). A long-running
-// program that interns many one-off strings (heavy string concatenation,
-// for example) would otherwise leave behind an ever-growing trail of
-// tombstones: table_delete() never shrinks capacity, so the backing
-// array would only ever grow, even though the actual string objects it
-// once pointed at are being freed correctly. Rebuilding sized to just
-// the survivors is what actually bounds memory for that workload.
+/* Rebuilds the table from scratch containing only marked keys, instead of
+   tombstoning dead ones in place like table_delete(). A long-running
+   program that interns many one-off strings (heavy string concatenation,
+   for example) would otherwise leave behind an ever-growing trail of
+   tombstones: table_delete() never shrinks capacity, so the backing
+   array would only ever grow, even though the actual string objects it
+   once pointed at are being freed correctly. Rebuilding sized to just
+   the survivors is what actually bounds memory for that workload. */
 void table_remove_white(table_t *table) {
 	table_entry_t *old_entries;
 	size_t old_capacity;

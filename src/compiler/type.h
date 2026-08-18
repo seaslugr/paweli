@@ -12,6 +12,10 @@ typedef struct struct_def struct_def_t;
 // definition, to avoid an #include cycle. See signature.h's own comment
 // on signature_table_t's tag.
 typedef struct signature_table signature_table_t;
+// Opaque for the same reason: runtime/module.h depends on signature.h,
+// which depends on this header, so type.h can only ever hold a pointer
+// to one. type.c #includes runtime/module.h for the full definition.
+typedef struct module_unit module_unit_t;
 
 // TYPE_VOID is only a valid *return* type meaning "no value comes back";
 // an expression can never actually have type TYPE_VOID. TYPE_NULL is the
@@ -207,15 +211,15 @@ int struct_def_find_field(const struct_def_t *def, const char *name, size_t name
 // Converts a parsed `type_ref_t` (the AST-level syntax annotation, e.g.
 // from a param or var_decl) into the compiler's internal type_t. structs
 // is consulted first when type_ref names a struct (base_type ==
-// TOKEN_IDENTIFIER); if nothing there matches, imported_structs (the
-// current file's single #module dependency's exported_structs, or NULL
-// if it has none) is checked next, accepting only an entry with
-// is_exported set. A file can have at most one #module directive, so
-// there is never more than one imported registry to fall back to, which
-// is what keeps an unqualified struct name unambiguous here even though
-// a function reference always needs `module.name(...)`. *out_found (if
-// non-NULL) is set to false, and a dummy TYPE_VOID returned, when
-// type_ref names an identifier that matches neither; the caller decides
-// how to report that (it has the source position and compiler context
-// this function doesn't).
-type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs, const struct_registry_t *imported_structs, bool *out_found);
+// TOKEN_IDENTIFIER); if nothing there matches, each of imported_modules'
+// exported_structs is checked next, accepting only an entry with
+// is_exported set. If more than one imported module exports a struct by
+// this name, that's ambiguous: *out_ambiguous (if non-NULL) is set to
+// true and a dummy TYPE_VOID returned, same as the not-found case,
+// which the caller distinguishes to report the right diagnostic. Exactly
+// one match resolves normally. *out_found (if non-NULL) is set to false,
+// and a dummy TYPE_VOID returned, when type_ref names an identifier that
+// matches nothing at all; the caller decides how to report either case
+// (it has the source position and compiler context this function
+// doesn't).
+type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs, const module_unit_t *const *imported_modules, size_t imported_module_count, bool *out_found, bool *out_ambiguous);

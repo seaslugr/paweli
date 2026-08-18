@@ -3,9 +3,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Register numbers match the x86-64 encoding directly (0-15), so a
-   caller can pass one straight into ModRM/SIB/opcode-extension math
-   without a lookup table. */
+// Register numbers match the x86-64 encoding directly (0-15), so a
+// caller can pass one straight into ModRM/SIB/opcode-extension math
+// without a lookup table.
 typedef enum {
 	JIT_RAX = 0,
 	JIT_RCX = 1,
@@ -25,15 +25,15 @@ typedef enum {
 	JIT_R15 = 15,
 } jit_reg_t;
 
-/* Same physical 0-15 numbering as jit_reg_t, but a distinct type since
-   an XMM register number is never interchangeable with a GPR one.
-   It is used only for the scalar-double (SSE2) primitives below. XMM0/XMM1
-   are the only values this file's callers ever actually pass today
-   (pure transient scratch within a single opcode's own codegen; unlike
-   the GPR file, nothing in this JIT ever holds a live XMM value across
-   a call or an opcode boundary, so there is no XMM analogue of R2a's
-   spill/reload machinery to worry about), but the encoder itself
-   supports all 16 the same way the GPR encoder already does. */
+// Same physical 0-15 numbering as jit_reg_t, but a distinct type since
+// an XMM register number is never interchangeable with a GPR one.
+// It is used only for the scalar-double (SSE2) primitives below. XMM0/XMM1
+// are the only values this file's callers ever actually pass today
+// (pure transient scratch within a single opcode's own codegen; unlike
+// the GPR file, nothing in this JIT ever holds a live XMM value across
+// a call or an opcode boundary, so there is no XMM analogue of R2a's
+// spill/reload machinery to worry about), but the encoder itself
+// supports all 16 the same way the GPR encoder already does.
 typedef enum {
 	JIT_XMM0 = 0,
 	JIT_XMM1 = 1,
@@ -53,7 +53,7 @@ typedef enum {
 	JIT_XMM15 = 15,
 } jit_xmm_reg_t;
 
-/* Values are the second opcode byte of the two-byte Jcc form (0F 8x). */
+// Values are the second opcode byte of the two-byte Jcc form (0F 8x).
 typedef enum {
 	JIT_CC_E = 0x84,
 	JIT_CC_NE = 0x85,
@@ -67,9 +67,9 @@ typedef enum {
 	JIT_CC_G = 0x8F,
 } jit_cc_t;
 
-/* A growable machine-code buffer, same realloc-doubling shape as
-   chunk_t's own bytecode buffer. Pure x86-64 encoding lives here; this
-   file has no knowledge of paweli bytecode or runtime layout. */
+// A growable machine-code buffer, same realloc-doubling shape as
+// chunk_t's own bytecode buffer. Pure x86-64 encoding lives here; this
+// file has no knowledge of paweli bytecode or runtime layout.
 typedef struct {
 	uint8_t *code;
 	size_t count;

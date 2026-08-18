@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "compiler/chunk.h"
@@ -60,8 +61,8 @@ static void mark_table(gray_stack_t *gray, table_t *table) {
 	}
 }
 
-// Marks obj's own children gray. obj itself is already black by the time
-// this runs (mark_object() marked it before pushing it onto the worklist).
+/* Marks obj's own children gray. obj itself is already black by the time
+   this runs (mark_object() marked it before pushing it onto the worklist). */
 static void blacken_object(gray_stack_t *gray, obj_t *obj) {
 	obj_function_t *function;
 	obj_module_t *module;

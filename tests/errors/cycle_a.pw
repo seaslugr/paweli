@@ -1,0 +1,10 @@
+#moduledef "cycle_a"
+#module "cycle_b"
+
+fn a_fn() -> int {
+	return cycle_b.b_fn();
+}
+
+fn main() {
+	export a_fn;
+}

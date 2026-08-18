@@ -1,12 +1,12 @@
-/* mmap()/mprotect() are POSIX, not ISO C11 (this project builds with
-   CMAKE_C_EXTENSIONS OFF, i.e. strict -std=c11), so sys/mman.h doesn't
-   declare them without an explicit feature-test macro, for the same
-   reasoning as src/platform/exe.c's own readlink()/chmod() use. This is
-   the third and last file in the tree allowed to touch raw POSIX APIs,
-   alongside exe.c and src/diagnostics/diagnostic.c's isatty()/fileno().
-   A future Windows port has exactly these three places to give a
-   real implementation to. Linux-only for now (paweli only targets ELF
-   right now). */
+// mmap()/mprotect() are POSIX, not ISO C11 (this project builds with
+// CMAKE_C_EXTENSIONS OFF, i.e. strict -std=c11), so sys/mman.h doesn't
+// declare them without an explicit feature-test macro, for the same
+// reasoning as src/platform/exe.c's own readlink()/chmod() use. This is
+// the third and last file in the tree allowed to touch raw POSIX APIs,
+// alongside exe.c and src/diagnostics/diagnostic.c's isatty()/fileno().
+// A future Windows port has exactly these three places to give a
+// real implementation to. Linux-only for now (paweli only targets ELF
+// right now).
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>

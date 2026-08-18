@@ -1,0 +1,16 @@
+// A #module cycle: cycle_a imports cycle_b, which imports back cycle_a.
+// Neither file is reachable on its own (module_compile() only ever
+// starts from an importer), so the cycle only surfaces once something
+// outside it imports in, here. Both live directly alongside this file
+// (not under fixtures/, unlike this directory's other error tests)
+// because a module's declared #moduledef name has to match every one of
+// its importers' own reference string, and cycle_a is imported both by
+// this file and by its sibling cycle_b; putting all three in the same
+// directory is what lets every reference use the same unprefixed name.
+// Intentionally never expected to compile; see module_errors.pw for the
+// general convention this otherwise follows.
+
+#module "cycle_a"
+
+fn main() {
+}

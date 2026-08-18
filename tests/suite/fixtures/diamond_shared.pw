@@ -1,0 +1,14 @@
+#moduledef "diamond_shared"
+
+struct Shared {
+	int value;
+}
+
+fn make(int v) -> Shared {
+	return Shared { value: v };
+}
+
+fn main() {
+	export Shared;
+	export make;
+}

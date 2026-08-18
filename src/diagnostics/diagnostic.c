@@ -1,6 +1,6 @@
-/* fileno() and isatty() are POSIX, not ISO C11 (this project builds with
-   CMAKE_C_EXTENSIONS OFF, i.e. strict -std=c11), so stdio.h/unistd.h don't
-   declare them without an explicit feature-test macro. */
+// fileno() and isatty() are POSIX, not ISO C11 (this project builds with
+// CMAKE_C_EXTENSIONS OFF, i.e. strict -std=c11), so stdio.h/unistd.h don't
+// declare them without an explicit feature-test macro.
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdarg.h>
@@ -16,7 +16,7 @@
 #define COLOR_BOLD "\x1b[1m"
 #define COLOR_RED "\x1b[1;31m"
 #define COLOR_YELLOW "\x1b[1;33m"
-#define COLOR_CYAN "\x1b[36m"
+#define COLOR_LIME "\x1b[38;5;149m"
 #define COLOR_GREEN "\x1b[1;32m"
 
 static bool color_enabled(void) {
@@ -115,13 +115,20 @@ static void clamp_to_source(const char *source, int *line, int *column) {
 /* Prints the offending source line and, when column is known, a caret
    line under it. Tabs in the source line are reproduced (not replaced by
    spaces) in the padding before the caret, so the caret lines up
-   correctly whatever width the terminal expands tabs to. */
-static void print_snippet(const char *source, int line, int column, bool color) {
+   correctly whatever width the terminal expands tabs to.
+
+   length is how many source characters the caret should underline: <= 1
+   draws the historical single '^'; a larger value draws a run of '^'
+   that many characters wide, clamped to whatever of the offending line
+   actually remains from column onward (a token's reported length can
+   run past a truncated or clamped line, e.g. after clamp_to_source()). */
+static void print_snippet(const char *source, int line, int column, int length, bool color) {
 	const char *line_start;
 	size_t line_length;
 	char line_number[16];
 	size_t i;
 	size_t caret_index;
+	size_t caret_count;
 
 	if (!find_source_line(source, line, &line_start, &line_length)) {
 		return;
@@ -141,30 +148,40 @@ static void print_snippet(const char *source, int line, int column, bool color) 
 		fputc(line_start[i] == '\t' ? '\t' : ' ', stderr);
 	}
 
-	if (color) {
-		fprintf(stderr, "%s^%s\n", COLOR_GREEN, COLOR_RESET);
-	} else {
-		fputs("^\n", stderr);
+	caret_count = length > 1 ? (size_t)length : 1;
+	if (caret_index < line_length && caret_index + caret_count > line_length) {
+		caret_count = line_length - caret_index;
 	}
+
+	if (color) {
+		fputs(COLOR_GREEN, stderr);
+	}
+	for (i = 0; i < caret_count; i++) {
+		fputc('^', stderr);
+	}
+	if (color) {
+		fputs(COLOR_RESET, stderr);
+	}
+	fputc('\n', stderr);
 }
 
-void diagnostic_emit(diag_severity_t severity, const char *code, const char *filename, const char *source, int line, int column, const char *format, ...) {
+void diagnostic_emit(diag_severity_t severity, const char *code, const char *filename, const char *source, int line, int column, int length, const char *format, ...) {
 	va_list args;
 	bool color;
 	const char *reset;
 	const char *bold;
-	const char *cyan;
+	const char *lime;
 
 	color = color_enabled();
 	reset = color ? COLOR_RESET : "";
 	bold = color ? COLOR_BOLD : "";
-	cyan = color ? COLOR_CYAN : "";
+	lime = color ? COLOR_LIME : "";
 
 	if (column > 0) {
 		clamp_to_source(source, &line, &column);
 	}
 
-	fprintf(stderr, "%s[%s]%s ", cyan, code, reset);
+	fprintf(stderr, "%s[%s]%s ", lime, code, reset);
 
 	if (column > 0) {
 		fprintf(stderr, "%s%s:%d:%d:%s ", bold, filename, line, column, reset);
@@ -179,5 +196,5 @@ void diagnostic_emit(diag_severity_t severity, const char *code, const char *fil
 	va_end(args);
 	fputs("\n", stderr);
 
-	print_snippet(source, line, column, color);
+	print_snippet(source, line, column, length, color);
 }

@@ -97,10 +97,10 @@ static bool stdlib_concat(vm_t *vm, int arg_count, value_t *args, value_t *out_r
 	return true;
 }
 
-// Runs of the delimiter collapse: "3   4" split on " " gives ["3", "4"],
-// not ["3", "", "", "4"]. Convenient for tokenizing free-form input like
-// a calculator line, and there is no current use case that needs the
-// empty-token form instead.
+/* Runs of the delimiter collapse: "3   4" split on " " gives ["3", "4"],
+   not ["3", "", "", "4"]. Convenient for tokenizing free-form input like
+   a calculator line, and there is no current use case that needs the
+   empty-token form instead. */
 static bool stdlib_split(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	obj_string_t *string;
 	obj_string_t *delim;

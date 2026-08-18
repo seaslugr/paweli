@@ -1,0 +1,96 @@
+==================
+Integer and float literals
+==================
+
+fn nums() {
+	int a = 42;
+	float b = 3.14;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (variable_declaration
+        (identifier)
+        (int_literal))
+      (variable_declaration
+        (identifier)
+        (float_literal)))))
+
+==================
+String literal with escape sequences
+==================
+
+fn greet() {
+	string s = "hello\nworld\t\"quoted\"";
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (variable_declaration
+        (identifier)
+        (string_literal
+          (escape_sequence)
+          (escape_sequence)
+          (escape_sequence)
+          (escape_sequence))))))
+
+==================
+Boolean and null literals
+==================
+
+fn defaults() {
+	bool a = true;
+	bool b = false;
+	string s = null;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (variable_declaration
+        (identifier)
+        (boolean_literal))
+      (variable_declaration
+        (identifier)
+        (boolean_literal))
+      (variable_declaration
+        (identifier)
+        (null_literal)))))
+
+==================
+Line and block comments
+==================
+
+// a line comment
+fn documented() {
+	/// a block comment ///
+	int x = 1; // trailing comment
+}
+
+---
+
+(source_file
+  (line_comment)
+  (function_declaration
+    (identifier)
+    (parameter_list)
+    (block
+      (block_comment)
+      (variable_declaration
+        (identifier)
+        (int_literal))
+      (line_comment))))

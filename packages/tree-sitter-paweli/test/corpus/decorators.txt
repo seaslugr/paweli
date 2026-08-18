@@ -1,0 +1,73 @@
+==================
+Decorator with no argument
+==================
+
+@test
+fn check_add() {
+}
+
+---
+
+(source_file
+  (function_declaration
+    (decorator
+      (identifier))
+    (identifier)
+    (parameter_list)
+    (block)))
+
+==================
+Decorator with a string argument
+==================
+
+@deprecated("use new_way instead")
+fn old_way() {
+}
+
+---
+
+(source_file
+  (function_declaration
+    (decorator
+      (identifier)
+      (string_literal))
+    (identifier)
+    (parameter_list)
+    (block)))
+
+==================
+Multiple decorators on one function
+==================
+
+@test
+@deprecated
+fn old_test() {
+}
+
+---
+
+(source_file
+  (function_declaration
+    (decorator
+      (identifier))
+    (decorator
+      (identifier))
+    (identifier)
+    (parameter_list)
+    (block)))
+
+==================
+Decorator on the same line as fn
+==================
+
+@test fn inline_test() { }
+
+---
+
+(source_file
+  (function_declaration
+    (decorator
+      (identifier))
+    (identifier)
+    (parameter_list)
+    (block)))

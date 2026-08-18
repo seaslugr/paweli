@@ -4,27 +4,26 @@
 
 #include "runtime/object.h"
 
-/* Threshold, in combined calls + loop back-edges (see
-   jit_note_loop_iteration() below), before a function gets
-   JIT-compiled. Overridable via the PAWELI_JIT_THRESHOLD env var
-   (mirrors vm.c's own PAWELI_GC_STRESS convention); 0 forces every
-   function to compile on its very first call, for testing the JIT path
-   itself.
-
-   Default 1: a function is compiled on its very first call, so even a
-   called-exactly-once function whose single call loops for the whole
-   program runs natively. That is the common scripting shape (main() called
-   once, doing all the work). This was chosen deliberately after
-   measuring: with a higher default threshold, jit_maybe_compile() also
-   triggers via OP_LOOP back-edge counting, but without
-   on-stack-replacement (there is none, matching the no-speculation/
-   no-deopt design) the *currently running* call keeps interpreting, so
-   a once-called function got compiled and never benefited on the call
-   that mattered. Eager-compile-on-first-call removes that entire class
-   of misses at the cost of compiling cold functions too. This is measured
-   negligible for real programs, since jit_compile_function() needs no
-   allocation and pays only microsecond-scale time per function (see
-   docs/design.md's JIT decision log entry). */
+// Threshold, in combined calls + loop back-edges (see
+// jit_note_loop_iteration() below), before a function gets
+// JIT-compiled. Overridable via the PAWELI_JIT_THRESHOLD env var
+// (mirrors vm.c's own PAWELI_GC_STRESS convention); 0 forces every
+// function to compile on its very first call, for testing the JIT path
+// itself.
+//
+// Default 1: a function is compiled on its very first call, so even a
+// called-exactly-once function whose single call loops for the whole
+// program runs natively. That is the common scripting shape (main() called
+// once, doing all the work). This was chosen deliberately after
+// measuring: with a higher default threshold, jit_maybe_compile() also
+// triggers via OP_LOOP back-edge counting, but without
+// on-stack-replacement (there is none, matching the no-speculation/
+// no-deopt design) the *currently running* call keeps interpreting, so
+// a once-called function got compiled and never benefited on the call
+// that mattered. Eager-compile-on-first-call removes that entire class
+// of misses at the cost of compiling cold functions too. This is measured
+// negligible for real programs, since jit_compile_function() needs no
+// allocation and pays only microsecond-scale time per function.
 #define JIT_DEFAULT_HOTNESS_THRESHOLD 1
 
 /* Called from call_value() on every call to a bare/closure paweli

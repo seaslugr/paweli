@@ -37,6 +37,8 @@ set(PAWELI_LIB_SOURCES
 
     src/platform/exe.c
 
+    src/project/manifest.c
+
     src/jit/jit_asm.c
     src/jit/jit_exec_mem.c
     src/jit/jit_compile.c
@@ -75,10 +77,23 @@ set(PAWELI_SANITIZE_LINK_OPTIONS
     $<$<CONFIG:Release>:-s>
 )
 
-add_executable(paweli src/main.c ${PAWELI_LIB_SOURCES})
+# src/cli/ is the paweli executable's own CLI (argv parsing/dispatch/
+# presentation) plus exec.c (compiling/running/building a program once
+# the CLI has decided what to do); see docs/design.md's decision log.
+# Deliberately not part of PAWELI_LIB_SOURCES: jit_selftest below is a
+# standalone harness for src/jit/ with no argv/CLI surface of its own,
+# the same reason it doesn't link src/main.c either.
+set(PAWELI_CLI_SOURCES
+    src/cli/commands.c
+    src/cli/exec.c
+    src/cli/output.c
+)
+
+add_executable(paweli src/main.c ${PAWELI_CLI_SOURCES} ${PAWELI_LIB_SOURCES})
 target_include_directories(paweli PRIVATE src)
 target_compile_options(paweli PRIVATE ${PAWELI_WARNING_OPTIONS})
 target_link_options(paweli PRIVATE ${PAWELI_SANITIZE_LINK_OPTIONS})
+target_compile_definitions(paweli PRIVATE "PAWELI_BUILD_TYPE=\"$<CONFIG>\"")
 
 if(UNIX)
     target_link_libraries(paweli PRIVATE m)
@@ -99,3 +114,10 @@ target_link_options(jit_selftest PRIVATE ${PAWELI_SANITIZE_LINK_OPTIONS})
 if(UNIX)
     target_link_libraries(jit_selftest PRIVATE m)
 endif()
+
+# `cmake --install build/<config>` installs the paweli binary and its
+# manpage. jit_selftest is a test harness, not installed.
+include(GNUInstallDirs)
+install(TARGETS paweli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES docs/man/paweli.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+install(FILES docs/man/paweli-syntax.7 DESTINATION ${CMAKE_INSTALL_MANDIR}/man7)

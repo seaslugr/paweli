@@ -32,7 +32,8 @@ int main() {
 	function->arity = 0;
 	const_index = chunk_add_constant(&function->chunk, value_int(42));
 	chunk_write(&function->chunk, OP_CONSTANT, 1, 1);
-	chunk_write(&function->chunk, (uint8_t)const_index, 1, 1);
+	chunk_write(&function->chunk, (uint8_t)((const_index >> 8) & 0xff), 1, 1);
+	chunk_write(&function->chunk, (uint8_t)(const_index & 0xff), 1, 1);
 	chunk_write(&function->chunk, OP_RETURN, 1, 1);
 
 	if (!jit_compile_function(function)) {

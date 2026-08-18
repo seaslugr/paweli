@@ -1,0 +1,8 @@
+// a line comment
+// <- @comment.line
+
+/// a block comment ///
+// <- @comment.block
+
+fn f() {
+}

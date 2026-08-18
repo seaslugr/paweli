@@ -1,0 +1,59 @@
+struct
+// <- @keyword
+Point
+{
+	int x
+	;
+}
+
+fn
+// <- @keyword
+add
+(int a)
+{
+	return
+	// <- @keyword
+	a
+	;
+
+	export
+	// <- @keyword
+	a
+	;
+
+	if
+	// <- @keyword.control.conditional
+	(true)
+	{
+	}
+	else
+	// <- @keyword.control.conditional
+	{
+	}
+
+	while
+	// <- @keyword.control.repeat
+	(true)
+	{
+		break
+		// <- @keyword.control.repeat
+		;
+	}
+
+	for
+	// <- @keyword.control.repeat
+	(int i : 0..1)
+	{
+		continue
+		// <- @keyword.control.repeat
+		;
+	}
+}
+
+#module
+// <- @keyword.control.import
+"geometry"
+;
+#moduledef
+// <- @keyword.control.import
+"shapes"

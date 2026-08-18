@@ -1,0 +1,32 @@
+fn
+add
+// <- @function
+(int a, int
+b
+// <- @variable.parameter
+)
+{
+	return a + b;
+}
+
+fn use_it
+()
+{
+	add
+	// <- @function.call
+	(1, 2)
+	;
+
+	stdlib
+	// <- @module
+	.print("hi")
+	;
+
+	Point p = { }
+	;
+	p
+	.
+	x
+	// <- @property
+	;
+}

@@ -1,0 +1,9 @@
+#moduledef "transitive_leaf"
+
+fn triple(int x) -> int {
+	return x * 3;
+}
+
+fn main() {
+	export triple;
+}

@@ -55,23 +55,22 @@ static bool stdlib_pop(vm_t *vm, int arg_count, value_t *args, value_t *out_resu
 	return true;
 }
 
-// Stable top-down merge sort: values[start, end) sorted in place, using
-// buffer (already sized to the whole array, by the caller) as scratch.
-// comparator is a paweli fn(T,T)->bool value, called via vm_call_value(),
-// which is reentrant, so it can be an arbitrary paweli function, including
-// one that itself calls back into more native code. Not qsort(): qsort's
-// comparator has no way to carry a vm_t* through to call back into
-// paweli, and the non-standard *_r/_s variants that do aren't portable
-// (see docs/style.md's portability rules).
-//
-// GC safety: buffer is plain malloc'd memory, not a GC root, but that's
-// fine, since every value it ever holds is a copy of something still
-// physically present in values[] (the array's own storage, already
-// reachable through the obj_array_t sitting in this native's own args[0],
-// itself still live on the VM stack for the whole call) at that same
-// moment, right up until the final copy-back loop overwrites values[]
-// with buffer's contents. Nothing is ever reachable *only* through
-// buffer.
+/* Stable top-down merge sort: values[start, end) sorted in place, using
+   buffer (already sized to the whole array, by the caller) as scratch.
+   comparator is a paweli fn(T,T)->bool value, called via vm_call_value(),
+   which is reentrant, so it can be an arbitrary paweli function, including
+   one that itself calls back into more native code. Not qsort(): qsort's
+   comparator has no way to carry a vm_t* through to call back into
+   paweli, and the non-standard *_r/_s variants that do aren't portable.
+
+   GC safety: buffer is plain malloc'd memory, not a GC root, but that's
+   fine, since every value it ever holds is a copy of something still
+   physically present in values[] (the array's own storage, already
+   reachable through the obj_array_t sitting in this native's own args[0],
+   itself still live on the VM stack for the whole call) at that same
+   moment, right up until the final copy-back loop overwrites values[]
+   with buffer's contents. Nothing is ever reachable *only* through
+   buffer. */
 static bool array_merge_sort(vm_t *vm, value_t *values, value_t *buffer, size_t start, size_t end, value_t comparator) {
 	size_t mid;
 	size_t left;
