@@ -40,17 +40,44 @@ A three-hot-local, no-call loop benchmark ran ~1.43x faster with all 3
 registers versus capped-at-1 (490ms -> 343ms); `loop_sum.pw` (2 hot
 locals, no spilling needed either way) unchanged at ~188ms.
 
+**Phase R2b (done, see design.md's 2026-08-16 "JIT register allocation,
+phase R2b: object-typed locals" entry):** extend eligibility to
+`string`/`struct`/array/closure locals (`VAL_OBJ`), competing in the
+same 3-register pool. Needed genuine spill-before-safepoint after all
+(the hard part flagged before R1 started): `emit_gc_check()` now
+flushes a bound `VAL_OBJ` register's payload into its own memory cell
+before every allocating opcode/call, gated to the exact bytecode-offset
+window (`[decl_end, dead_at)`) that memory legitimately belongs to the
+local, found the hard way via three real, GC_STRESS-confirmed bugs
+(pre-declaration scratch reuse, post-scope-exit stale writes, a
+decl_end-sync-vs-jump-target conflict between loop back-edges and
+`OP_TRY_CALL`'s catch handler) plus a fourth, tag-corruption bug from
+the same scratch-reuse coincidence hitting the tag byte instead of the
+payload. Also closed a related, pre-existing bug the same mechanism
+surfaced: a register-cached scalar assigned `null` (legal; `null`
+unifies with any declared type) was silently corrupting to a 0-payload
+scalar, since a scalar's tag was assumed permanently fixed the same way
+R1 assumed. `PAW_VERSION` bumped 2 -> 3 for the new `local_reg_dead_at`
+per-slot array. Benchmarked honestly: a real ~9% *regression* for a
+call-heavy shape (a struct local passed as a call argument every loop
+iteration, paying the new flush plus R2a's own caller-saved push/pop on
+every call), a real but modest ~4% win for a read-heavy/call-light
+shape. Correctly framed as the correctness/GC-safety unlock this was
+always going to be, not a guaranteed win independent of call shape.
+
+**Quick follow-up (done, see design.md's 2026-08-17 "call-shape-aware
+ranking for object locals" entry):** `select_register_locals()` now
+penalizes a `VAL_OBJ` candidate's own ranking score for every
+allocating-opcode occurrence within its live window, letting it lose
+its slot entirely (not just its priority) when caching it would not pay
+off. Flipped `struct_locals.pw`'s own regression into a win (~118.7ms
+-> ~106.4ms, beating even the fully-disabled baseline) with zero effect
+on the call-light case. Still a flat, loop-nesting-blind heuristic, not
+the real fix; a future tiering pass (item 4 below) is the natural place
+for that.
+
 Everything below is now the real remaining scope:
 
-- [ ] Object-typed locals: R1/R2a's GC-safety argument only holds for
-      scalar numeric types. Register-caching a struct/array/string/
-      closure local needs genuine spill-before-safepoint (the value's
-      current pointer must be visible to `mark_roots()` at any point a
-      collection could run, not just "whatever's stale in memory"),
-      the same contract `emit_write_frame_ip`/`emit_gc_check` already
-      enforce for r14 today. This is the hard part flagged before R1
-      started, and should drive the allocator design for this piece,
-      not follow it.
 - [ ] Add a `--dump-jit` style debug flag for inspecting emitted
       machine code, mirroring `--dump-bytecode`
 - [ ] Benchmark gate: how much closer to the C equivalent R1+R2a's

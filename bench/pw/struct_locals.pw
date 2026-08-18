@@ -1,0 +1,23 @@
+struct Accumulator {
+	int total;
+	int count;
+}
+
+fn bump(Accumulator acc, int v) -> int {
+	return acc.total + v;
+}
+
+fn compute(int n) -> int {
+	Accumulator acc = Accumulator { total: 0, count: 0 };
+	int i = 0;
+	while (i < n) {
+		acc.total = bump(acc, i);
+		acc.count = acc.count + 1;
+		i = i + 1;
+	}
+	return acc.total;
+}
+
+fn main() {
+	print(compute(5000000));
+}

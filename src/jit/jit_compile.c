@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "compiler/chunk.h"
@@ -70,6 +71,12 @@ typedef struct {
 	jit_reg_t reg[JIT_MAX_REG_LOCALS];
 	value_type_t type[JIT_MAX_REG_LOCALS];
 	size_t decl_end[JIT_MAX_REG_LOCALS];
+	// Meaningful only for a VAL_OBJ-typed binding (see chunk_t's own
+	// comment on local_reg_dead_at); (size_t)-1 for anything else,
+	// which combined with emit_gc_check()'s offset < dead_at check
+	// (always true against the sentinel) makes the check a no-op for
+	// scalar bindings without needing a separate type check there too.
+	size_t dead_at[JIT_MAX_REG_LOCALS];
 	int count;
 } jit_reg_alloc_t;
 
@@ -160,7 +167,7 @@ static void count_cached_lookup_sites(const chunk_t *chunk, size_t *out_lookup_c
 static void emit_prologue(jit_asm_t *a, const jit_reg_alloc_t *ra, int arity);
 static void emit_epilogue(jit_asm_t *a);
 static void emit_write_frame_ip(jit_asm_t *a, const chunk_t *chunk, size_t next_offset);
-static void emit_gc_check(jit_asm_t *a, const jit_reg_alloc_t *ra);
+static void emit_gc_check(jit_asm_t *a, const jit_reg_alloc_t *ra, size_t offset);
 static void emit_call(jit_asm_t *a, const jit_reg_alloc_t *ra);
 
 static bool jit_helper_equals(const value_t *a, const value_t *b);
@@ -196,20 +203,20 @@ static size_t emit_op_jump_if_false(jit_asm_t *a);
 static void emit_op_get_global(jit_asm_t *a, const chunk_t *chunk, table_t *globals, uint8_t const_index, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_table_cache_t *cache);
 static void emit_op_set_global(jit_asm_t *a, const chunk_t *chunk, table_t *globals, uint8_t const_index, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_table_cache_t *cache);
 static size_t emit_stack_overflow_check(jit_asm_t *a);
-static void emit_op_call(jit_asm_t *a, const chunk_t *chunk, uint8_t arg_count, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_call_cache_t *call_cache);
-static void emit_op_get_index(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
+static void emit_op_call(jit_asm_t *a, const chunk_t *chunk, size_t offset, uint8_t arg_count, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_call_cache_t *call_cache);
+static void emit_op_get_index(jit_asm_t *a, const chunk_t *chunk, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
 static void emit_op_set_index(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
 static void emit_op_get_field(jit_asm_t *a, uint8_t field_index);
 static void emit_op_set_field(jit_asm_t *a, uint8_t field_index);
-static void emit_op_array(jit_asm_t *a, const chunk_t *chunk, uint8_t count, size_t next_offset, const jit_reg_alloc_t *ra);
-static void emit_op_struct(jit_asm_t *a, const chunk_t *chunk, uint8_t count, obj_string_t *type_name, size_t next_offset, const jit_reg_alloc_t *ra);
+static void emit_op_array(jit_asm_t *a, const chunk_t *chunk, size_t offset, uint8_t count, size_t next_offset, const jit_reg_alloc_t *ra);
+static void emit_op_struct(jit_asm_t *a, const chunk_t *chunk, size_t offset, uint8_t count, obj_string_t *type_name, size_t next_offset, const jit_reg_alloc_t *ra);
 static void emit_op_closure(jit_asm_t *a, const chunk_t *chunk, size_t offset, size_t next_offset, const jit_reg_alloc_t *ra);
 static void emit_op_get_upvalue(jit_asm_t *a, uint8_t slot);
 static void emit_op_set_upvalue(jit_asm_t *a, uint8_t slot);
 static void emit_op_close_upvalue(jit_asm_t *a, const jit_reg_alloc_t *ra);
 static void emit_op_throw(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
 static void emit_op_get_property(jit_asm_t *a, const chunk_t *chunk, obj_string_t *name, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_table_cache_t *cache);
-static size_t emit_op_try_call(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
+static size_t emit_op_try_call(jit_asm_t *a, const chunk_t *chunk, size_t offset, size_t next_offset, size_t target_bytecode_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
 
 static void fixup_list_push(fixup_list_t *list, size_t site) {
 	if (list->count == list->capacity) {
@@ -259,6 +266,25 @@ static void forward_fixup_list_free(forward_fixup_list_t *list) {
 // correct. keeping the write unconditional avoids needing to
 // special-case parameter vs. not here.
 //
+// A VAL_OBJ binding's tag, once baked here, means "this memory cell is
+// GC-scannable", not "this is definitely a real object right now" --
+// its logical null-vs-object distinction lives entirely in the payload
+// (0 means null, nonzero means a real heap pointer; see
+// emit_op_get_local()'s own comment on this convention). A
+// *non-parameter* VAL_OBJ binding's register is explicitly zeroed here,
+// right after the tag bake, for exactly the reason a scalar binding
+// never needed this: emit_gc_check()'s new per-safepoint flush (see its
+// own comment) writes whatever is currently in a bound VAL_OBJ
+// register into this same memory cell on every safepoint from this
+// point on, including any that run before the local's own declaration
+// executes (an earlier OP_CALL/OP_ARRAY/etc. in this same function).
+// Without zeroing first, that flush would write leftover garbage from
+// whatever this register held on entry, and mark_object() would
+// dereference it as a live pointer. A parameter needs no such zeroing:
+// it loads its real payload (already 0 for a null argument, since the
+// caller built it via value_null()) from memory a few lines below,
+// before any safepoint in *this* function's own body can run.
+//
 // r10/r11 are pushed/popped here unconditionally, whether or not this
 // particular function's allocator actually bound them, exactly like
 // r15 already was before this phase. simpler than making the
@@ -298,6 +324,8 @@ static void emit_prologue(jit_asm_t *a, const jit_reg_alloc_t *ra, int arity) {
 		jit_emit_mov32_mem_reg(a, JIT_R13, disp, JIT_RCX);
 		if (ra->slot[i] < arity) {
 			jit_emit_mov_reg_mem(a, ra->reg[i], JIT_R13, disp + 8);
+		} else if (ra->type[i] == VAL_OBJ) {
+			jit_emit_xor_reg_reg(a, ra->reg[i], ra->reg[i]);
 		}
 	}
 }
@@ -340,11 +368,17 @@ static void emit_write_frame_ip(jit_asm_t *a, const chunk_t *chunk, size_t next_
 // callee-saved and survives a call untouched per the System V AMD64
 // ABI, exactly why R1 needed no spill machinery at all) must be
 // saved/restored here since nothing else will: the callee is free to
-// clobber them for its own purposes. This is not a GC-safety concern.
-// A register-eligible slot's tag is never VAL_OBJ, so mark_roots()
-// never reads a stale payload as a problem, the same argument R1 relies
-// on for r15. it's purely that the *program's own value* would
-// otherwise be wrong after the call returns.
+// clobber them for its own purposes. This push/pop targets the native
+// C call stack, which mark_roots() never scans, so it is not itself a
+// GC-safety mechanism for a VAL_OBJ-typed binding (unlike a scalar
+// binding, a register-eligible slot's tag genuinely can be VAL_OBJ now
+// -- see compiler.c's register_cacheable_value_type()). GC safety for
+// such a binding is handled earlier and separately, inside
+// emit_gc_check()'s own flush to frame->slots (its own comment), which
+// every call site reaching this function already runs first. What this
+// push/pop alone still guarantees is purely that the *program's own
+// value* survives the call correctly, exactly the same reason it
+// already existed for a scalar binding before this phase.
 //
 // An odd number of saved registers (only possible value here: 1, since
 // at most r10 and r11 are ever caller-saved bindings) would misalign
@@ -390,11 +424,78 @@ static void emit_call(jit_asm_t *a, const jit_reg_alloc_t *ra) {
 // mark_roots() reads that field directly and must see this frame's
 // true current stack contents whether or not a collection actually
 // runs this time.
-static void emit_gc_check(jit_asm_t *a, const jit_reg_alloc_t *ra) {
+//
+// This is also the single point every one of this file's 6 allocating
+// sites already funnels through (the generic OP_CALL path, OP_GET_INDEX's
+// string-indexing slow path, OP_ARRAY, OP_STRUCT, OP_CLOSURE,
+// OP_TRY_CALL), which makes it the one place a VAL_OBJ-typed register
+// binding's live pointer needs to become visible to mark_roots() before
+// a collection can run: unlike vm->stack (covered by the r14 sync
+// above), mark_roots() never scans a CPU register directly. For every
+// currently bound VAL_OBJ slot ALREADY DECLARED by this point (offset,
+// this call site's own bytecode position, is at or past ra->decl_end[i]
+// -- or this is a parameter, decl_end's (size_t)-1 sentinel, live from
+// entry), write its register's payload into its own frame->slots[slot]
+// memory cell (r13+disp+8; the tag half was already permanently baked
+// by emit_prologue() and is never rewritten here). This is a pure
+// spill, not a spill-and-reload: gc_collect() never moves an object,
+// only frees an unreached one, so the register itself needs no update
+// afterward regardless of whether a collection actually runs this time,
+// the same "always sync, whether or not it's needed this time"
+// reasoning the r14 sync above already uses.
+//
+// A slot's own reserved memory cell is not exclusively "its own" for
+// the binding's entire register lifetime, only during [decl_end,
+// dead_at): the compile-time bytecode-offset window between its own
+// declaration and its own scope-closing pop (see chunk_t's and
+// jit_reg_alloc_t's own comments on those two fields). Both ends are
+// load-bearing, guarding the two opposite ends of the same underlying
+// fact -- a slot's address is only "this local's own" while the local
+// is actually in scope, and it's ordinary operand-stack space at every
+// other point in the function:
+//
+// - Before decl_end: a non-parameter local's first-ever memory slot
+//   coincides with wherever r14 happened to be before anything was
+//   ever pushed (locals occupy a fixed prefix of the frame; the operand
+//   stack only ever grows above whatever's already declared). `int[]
+//   nums = [1, 2, 3];` itself contains a safepoint (OP_ARRAY's own
+//   emit_gc_check(), before the array is even built) that runs while
+//   the three literal elements are still sitting in that exact memory
+//   as scratch, not yet nums's own value. Flushing unconditionally
+//   there would clobber that in-flight data with whatever the
+//   not-yet-declared binding's register currently holds (0, per
+//   emit_prologue()'s own zeroing), corrupting the local's own
+//   initializer.
+// - At or after dead_at: a block-scoped binding like a
+//   `catch(string message)` binding going out of scope at the end of
+//   its catch handler, well before this function itself returns.
+//   Once the local's own scope-closing OP_POP has run, r14 drops back
+//   below this slot's address, and whatever pushes next (another
+//   call's arguments, a later expression's temporaries -- concretely,
+//   the very next global/function value this same function pushes)
+//   legitimately reuses that exact memory. An earlier version of this
+//   check only gated the decl_end side and used a *runtime* r14
+//   comparison for this side ("is this slot's cell still within the
+//   currently pushed range"), on the theory that this alone would
+//   generalize to any scope shape -- but that check cannot distinguish
+//   "r14 is past this address because the local itself is still live"
+//   from "r14 grew past this address again because something *else*
+//   got pushed here after the local's own scope closed", and the
+//   second case is exactly what dead_at exists to rule out instead.
+static void emit_gc_check(jit_asm_t *a, const jit_reg_alloc_t *ra, size_t offset) {
 	size_t stress_taken;
 	size_t threshold_skip;
+	int i;
 
 	jit_emit_mov_mem_reg(a, JIT_R12, offsetof(vm_t, stack_top), JIT_R14);
+
+	for (i = 0; i < ra->count; i++) {
+		if (ra->type[i] == VAL_OBJ && (ra->decl_end[i] == (size_t)-1 || offset >= ra->decl_end[i]) && offset < ra->dead_at[i]) {
+			int32_t disp = (int32_t)ra->slot[i] * (int32_t)sizeof(value_t);
+
+			jit_emit_mov_mem_reg(a, JIT_R13, disp + 8, ra->reg[i]);
+		}
+	}
 
 	jit_emit_movzx8_reg_mem(a, JIT_RAX, JIT_R12, offsetof(vm_t, gc_stress));
 	jit_emit_test_reg_reg(a, JIT_RAX, JIT_RAX);
@@ -670,17 +771,46 @@ static void emit_op_dup_n(jit_asm_t *a, uint8_t count) {
 // If slot is one of the (up to 3) register-allocated locals (see
 // select_register_locals()), its bound register already holds its
 // current payload. push a value_t built from it directly, no memory
-// access at all. The tag is a compile-time-known constant
-// (ra->type[i], from chunk->local_reg_types[slot]): register-eligibility
-// (compiler.c's note_local_reg_slot()) guarantees this slot's type
-// never changes for the whole function.
+// access at all. For a scalar binding (VAL_INT/VAL_FLOAT/VAL_BOOL) the
+// tag is a compile-time-known constant (ra->type[i], from
+// chunk->local_reg_types[slot]): register-eligibility (compiler.c's
+// note_local_reg_slot()) guarantees this slot's type never changes for
+// the whole function.
+//
+// A VAL_OBJ binding is different: paweli's type_is_assignable() lets
+// `null` flow into a variable of any declared type, so an object-typed
+// local's *logical* tag genuinely does vary between VAL_NULL and
+// VAL_OBJ across its lifetime, even though its register-cache
+// eligibility (unlike a scalar's, see disqualify_local_reg_slot()'s own
+// comment in compiler.c) is never revoked for this. Reconstructed here
+// at runtime instead, from the one bit of information a bare payload
+// register can carry unambiguously: 0 means null (value_null() always
+// writes payload 0, and a live heap object's address is never 0), any
+// other value means a real object (value_obj() only ever wraps a real
+// allocation). This is the one and only place that reconstruction has
+// to happen: every other opcode already consumes this local's value
+// only after it's been materialized onto the VM stack right here, with
+// no awareness that its source was register-cached at all.
 static void emit_op_get_local(jit_asm_t *a, uint8_t slot, const jit_reg_alloc_t *ra) {
 	int32_t disp;
 	int i;
 
 	for (i = 0; i < ra->count; i++) {
 		if (ra->slot[i] >= 0 && slot == (uint8_t)ra->slot[i]) {
-			jit_emit_mov32_reg_imm32(a, JIT_RCX, (uint32_t)ra->type[i]);
+			if (ra->type[i] == VAL_OBJ) {
+				size_t null_site;
+				size_t tag_done;
+
+				jit_emit_test_reg_reg(a, ra->reg[i], ra->reg[i]);
+				null_site = jit_emit_jcc(a, JIT_CC_E);
+				jit_emit_mov32_reg_imm32(a, JIT_RCX, (uint32_t)VAL_OBJ);
+				tag_done = jit_emit_jmp(a);
+				jit_patch_rel32(a, null_site, a->count);
+				jit_emit_mov32_reg_imm32(a, JIT_RCX, (uint32_t)VAL_NULL);
+				jit_patch_rel32(a, tag_done, a->count);
+			} else {
+				jit_emit_mov32_reg_imm32(a, JIT_RCX, (uint32_t)ra->type[i]);
+			}
 			jit_emit_mov32_mem_reg(a, JIT_R14, 0, JIT_RCX);
 			jit_emit_mov_mem_reg(a, JIT_R14, 8, ra->reg[i]);
 			jit_emit_add_reg_imm32(a, JIT_R14, (int32_t)sizeof(value_t));
@@ -1393,7 +1523,7 @@ static size_t emit_stack_overflow_check(jit_asm_t *a) {
 // cached yet) falls through to the exact same jit_helper_call_cached()
 // dispatch this file always used, just with a cache to refresh on
 // success instead of jit_helper_call_cached's plain predecessor.
-static void emit_op_call(jit_asm_t *a, const chunk_t *chunk, uint8_t arg_count, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_call_cache_t *call_cache) {
+static void emit_op_call(jit_asm_t *a, const chunk_t *chunk, size_t offset, uint8_t arg_count, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_call_cache_t *call_cache) {
 	int32_t callee_disp;
 	size_t overflow_site;
 	size_t miss_tag;
@@ -1421,7 +1551,7 @@ static void emit_op_call(jit_asm_t *a, const chunk_t *chunk, uint8_t arg_count, 
 	// shape of emit_gc_check() keeps mark_roots() correct (it scans
 	// vm->stack[0..stack_top); callee and args are still in it, above
 	// frame->slots, and r14 is callee-saved so gc_collect preserves it).
-	emit_gc_check(a, ra);
+	emit_gc_check(a, ra, offset);
 
 	callee_disp = -(int32_t)(arg_count + 1) * (int32_t)sizeof(value_t);
 
@@ -1521,7 +1651,7 @@ static void emit_op_call(jit_asm_t *a, const chunk_t *chunk, uint8_t arg_count, 
 // array->count`: the sign test uses JIT_CC_L (jl) after test. The TEST
 // instruction clears OF, so jl trips exactly on SF, and the count
 // compare is unsigned (jae) since count is a size_t.
-static void emit_op_get_index(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
+static void emit_op_get_index(jit_asm_t *a, const chunk_t *chunk, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
 	size_t fail_obj;
 	size_t fail_array;
 	size_t fail_int;
@@ -1577,7 +1707,7 @@ static void emit_op_get_index(jit_asm_t *a, const chunk_t *chunk, size_t next_of
 	// happen (as normal C argument evaluation) before it can write through
 	// out, and nothing else reads that slot again in between.
 	emit_write_frame_ip(a, chunk, next_offset);
-	emit_gc_check(a, ra);
+	emit_gc_check(a, ra, offset);
 
 	jit_emit_mov_reg_reg(a, JIT_RDI, JIT_R12);
 	jit_emit_mov_reg_reg(a, JIT_RSI, JIT_R14);
@@ -1738,12 +1868,12 @@ static void emit_op_set_field(jit_asm_t *a, uint8_t field_index) {
 // the native x86 stack instead (sub rsp,16 rather than 8, to keep the
 // 16-byte call-site alignment emit_prologue() already establishes;
 // only the low 8 bytes are ever used).
-static void emit_op_array(jit_asm_t *a, const chunk_t *chunk, uint8_t count, size_t next_offset, const jit_reg_alloc_t *ra) {
+static void emit_op_array(jit_asm_t *a, const chunk_t *chunk, size_t offset, uint8_t count, size_t next_offset, const jit_reg_alloc_t *ra) {
 	int32_t src_base;
 	int i;
 
 	emit_write_frame_ip(a, chunk, next_offset);
-	emit_gc_check(a, ra);
+	emit_gc_check(a, ra, offset);
 
 	jit_emit_mov_reg_mem(a, JIT_RDI, JIT_R12, offsetof(vm_t, heap));
 	jit_emit_mov_reg_imm64(a, JIT_RAX, (uint64_t)(uintptr_t)object_new_array);
@@ -1788,12 +1918,12 @@ static void emit_op_array(jit_asm_t *a, const chunk_t *chunk, uint8_t count, siz
 // (see this file's own history/design.md's "R1 register-allocation bug"
 // entry). Held on the native x86 stack instead, mirroring
 // emit_op_array()'s own stash above for the identical reason.
-static void emit_op_struct(jit_asm_t *a, const chunk_t *chunk, uint8_t count, obj_string_t *type_name, size_t next_offset, const jit_reg_alloc_t *ra) {
+static void emit_op_struct(jit_asm_t *a, const chunk_t *chunk, size_t offset, uint8_t count, obj_string_t *type_name, size_t next_offset, const jit_reg_alloc_t *ra) {
 	int32_t src_base;
 	int i;
 
 	emit_write_frame_ip(a, chunk, next_offset);
-	emit_gc_check(a, ra);
+	emit_gc_check(a, ra, offset);
 
 	jit_emit_mov_reg_mem(a, JIT_RDI, JIT_R12, offsetof(vm_t, heap));
 	jit_emit_mov_reg_imm64(a, JIT_RSI, (uint64_t)(uintptr_t)type_name);
@@ -1845,7 +1975,7 @@ static void emit_op_closure(jit_asm_t *a, const chunk_t *chunk, size_t offset, s
 	descriptors = &chunk->code[offset + 3];
 
 	emit_write_frame_ip(a, chunk, next_offset);
-	emit_gc_check(a, ra);
+	emit_gc_check(a, ra, offset);
 
 	jit_emit_mov_reg_reg(a, JIT_RDI, JIT_R12);
 	jit_emit_mov_reg_reg(a, JIT_RSI, JIT_RBX);
@@ -2000,17 +2130,38 @@ static void emit_op_get_property(jit_asm_t *a, const chunk_t *chunk, obj_string_
 //
 // Returns the fixup site of the (forward-only) branch taken on
 // failure, for the caller to record against this instruction's own
-// jump-offset operand. mirroring emit_op_jump_if_false()'s contract
-// exactly, since that's structurally what this is: on success, fall
-// through with the result already on the stack; on failure, jump to
-// the catch handler with the error message already on the stack.
-static size_t emit_op_try_call(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
+// jump-offset operand (target_bytecode_offset). mirroring
+// emit_op_jump_if_false()'s contract exactly, since that's structurally
+// what this is: on success, fall through with the result already on
+// the stack; on failure, jump to the catch handler with the error
+// message already on the stack.
+//
+// That failure jump is genuinely special among every jump in this
+// file: it's the one place a jump target's own bytecode offset can be
+// a register-allocated local's decl_end (the optional `catch(string
+// name)` binding) *and* still needs the corresponding sync to actually
+// run on arrival, unlike every other jump that might coincidentally
+// share a bytecode offset with some earlier declaration's decl_end
+// (most commonly a loop's own back-edge, see the main translation
+// loop's own comment on its shared decl_end sync). The general,
+// shared-per-bytecode-offset sync deliberately does NOT handle this
+// case (it only fires for ordinary fall-through into that offset), so
+// this function emits its own dedicated one: patches the failure jump
+// to land here directly (no forward fixup needed, this address is
+// already known), syncs any bound register whose decl_end equals
+// target_bytecode_offset from the freshly-caught message now sitting
+// at [r14-8], then falls into a second, ordinary forward jump that
+// *does* need the caller's usual fixup, landing on the shared,
+// sync-free entry point for target_bytecode_offset.
+static size_t emit_op_try_call(jit_asm_t *a, const chunk_t *chunk, size_t offset, size_t next_offset, size_t target_bytecode_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
 	size_t overflow_site;
 	size_t ok_site;
 	size_t catch_site;
+	size_t catch_sync_jump;
+	int ri;
 
 	emit_write_frame_ip(a, chunk, next_offset);
-	emit_gc_check(a, ra);
+	emit_gc_check(a, ra, offset);
 	overflow_site = emit_stack_overflow_check(a);
 
 	jit_emit_mov_reg_reg(a, JIT_RDI, JIT_R12);
@@ -2029,8 +2180,28 @@ static size_t emit_op_try_call(jit_asm_t *a, const chunk_t *chunk, size_t next_o
 	jit_emit_mov32_reg_imm32(a, JIT_RAX, 0);
 	fixup_list_push(epilogue_fixups, jit_emit_jmp(a));
 
+	// Catch-entry: the failure jump lands here directly (address already
+	// known, no forward fixup needed for this one), syncs, then falls
+	// into its own forward jump (needing the caller's usual fixup) to
+	// target_bytecode_offset's ordinary, sync-free entry point.
+	jit_patch_rel32(a, catch_site, a->count);
+	for (ri = 0; ri < ra->count; ri++) {
+		if (ra->decl_end[ri] == target_bytecode_offset) {
+			jit_emit_mov_reg_mem(a, ra->reg[ri], JIT_R14, -8);
+		}
+	}
+	catch_sync_jump = jit_emit_jmp(a);
+
+	// Success lands here, deliberately *after* the catch-sync block
+	// above, not before it: this is the value the try-block itself
+	// produced, not a caught error, so it must never run that sync.
+	// This is also, unchanged from before the catch-sync block existed,
+	// exactly where this function's own generated code ends -- which is
+	// where the very next bytecode instruction (OP_JUMP, emitted by
+	// compile_try_expr() immediately after OP_TRY_CALL, to skip the
+	// catch region on success) gets translated next.
 	jit_patch_rel32(a, ok_site, a->count);
-	return catch_site;
+	return catch_sync_jump;
 }
 
 // A pre-pass counting how many OP_GET_GLOBAL/OP_GET_PROPERTY sites (into
@@ -2175,6 +2346,35 @@ static void select_register_locals(const chunk_t *chunk, jit_reg_alloc_t *out) {
 	offset = 0;
 	while (offset < chunk->count) {
 		opcode = chunk->code[offset];
+
+		// A VAL_OBJ-typed binding pays real, per-occurrence overhead
+		// every time one of these 5 opcodes runs while it's alive
+		// (emit_gc_check()'s flush, plus R2a's own caller-saved
+		// push/pop if it lands in r10/r11): unlike a scalar binding,
+		// whose register-caching is free once won, an object binding's
+		// caching cost scales with how often a safepoint happens
+		// nearby, not just with how often the binding itself is read.
+		// Penalized directly against its own access count here, at the
+		// same flat, unweighted granularity access_counts[] itself
+		// already uses (this pass has no loop-nesting information
+		// either; see this function's own header comment), so a
+		// heavily call-adjacent object local can lose its own registry
+		// slot to a scalar (or simply drop out entirely, since the
+		// ranking below only ever picks a strictly positive count) even
+		// when a register would otherwise be free. Deliberately not
+		// restricted to opcodes whose safepoint is unconditional at
+		// runtime (OP_GET_INDEX's string-indexing slow path is a 6th
+		// real safepoint this scan can't cheaply predict from the
+		// opcode alone); undercounting there only makes the penalty
+		// slightly conservative, never wrong.
+		if (opcode == OP_CALL || opcode == OP_ARRAY || opcode == OP_STRUCT || opcode == OP_CLOSURE || opcode == OP_TRY_CALL) {
+			for (i = 0; i < chunk->local_slot_count; i++) {
+				if (chunk->local_reg_eligible[i] && chunk->local_reg_types[i] == VAL_OBJ && offset >= chunk->local_reg_decl_end[i] && offset < chunk->local_reg_dead_at[i]) {
+					access_counts[i] -= 8;
+				}
+			}
+		}
+
 		switch (opcode) {
 			case OP_GET_LOCAL:
 			case OP_SET_LOCAL:
@@ -2312,8 +2512,13 @@ bool jit_compile_function(obj_function_t *function) {
 	// non-parameter register local. a parameter's bound register's
 	// value comes from emit_prologue() loading frame->slots directly,
 	// since there's no declaration bytecode for a parameter to speak of.
+	// dead_at mirrors it for the opposite end of a VAL_OBJ binding's
+	// live window (see jit_reg_alloc_t's own comment); a parameter's
+	// scope never explicitly closes before the function itself returns,
+	// same (size_t)-1 sentinel as an ordinary decl_end-less binding.
 	for (reg_i = 0; reg_i < ra.count; reg_i++) {
 		ra.decl_end[reg_i] = ra.slot[reg_i] >= function->arity ? chunk->local_reg_decl_end[ra.slot[reg_i]] : (size_t)-1;
+		ra.dead_at[reg_i] = ra.slot[reg_i] >= function->arity ? chunk->local_reg_dead_at[ra.slot[reg_i]] : (size_t)-1;
 	}
 	// See jit_table_cache_t's/jit_call_cache_t's own comments: both
 	// sized to their final counts and allocated before any code is
@@ -2351,6 +2556,24 @@ bool jit_compile_function(obj_function_t *function) {
 		size_t next_offset;
 		size_t target_bytecode_offset;
 
+		// native_offset_for_bytecode[offset] must name the address of
+		// the FIRST native instruction reached when execution arrives at
+		// this bytecode position, whether by ordinary fall-through or by
+		// a jump landing here directly -- recorded before anything below
+		// is emitted for this offset, same as it always was. Crucially,
+		// this is recorded BEFORE the possible decl_end sync below is
+		// emitted: any jump landing exactly at this bytecode offset
+		// (a loop's own back-edge, most commonly, when a scalar local's
+		// declaration is textually the last thing before a loop's own
+		// condition check, e.g. `int i = 0; while (...) {...}`) has to
+		// land on the *ordinary* translated code for this offset, not
+		// on the sync -- a loop back-edge doesn't carry a freshly
+		// declared value the way OP_TRY_CALL's catch jump does (see
+		// emit_op_try_call()'s own comment for that specific,
+		// deliberately separate case), so re-running the sync there
+		// would load a stale/garbage value from wherever the loop
+		// body's own last pushed-then-popped temporary happened to
+		// leave [r14-8], not this local's real value.
 		native_offset_for_bytecode[offset] = buf.count;
 		opcode = chunk->code[offset];
 
@@ -2474,13 +2697,13 @@ bool jit_compile_function(obj_function_t *function) {
 				break;
 			case OP_CALL:
 				next_offset = offset + 2;
-				emit_op_call(&buf, chunk, chunk->code[offset + 1], next_offset, &epilogue_fixups, &ra, &call_cache[call_cache_index]);
+				emit_op_call(&buf, chunk, offset, chunk->code[offset + 1], next_offset, &epilogue_fixups, &ra, &call_cache[call_cache_index]);
 				call_cache_index++;
 				offset += 2;
 				break;
 			case OP_GET_INDEX:
 				next_offset = offset + 1;
-				emit_op_get_index(&buf, chunk, next_offset, &epilogue_fixups, &ra);
+				emit_op_get_index(&buf, chunk, offset, next_offset, &epilogue_fixups, &ra);
 				offset += 1;
 				break;
 			case OP_SET_INDEX:
@@ -2498,12 +2721,12 @@ bool jit_compile_function(obj_function_t *function) {
 				break;
 			case OP_ARRAY:
 				next_offset = offset + 2;
-				emit_op_array(&buf, chunk, chunk->code[offset + 1], next_offset, &ra);
+				emit_op_array(&buf, chunk, offset, chunk->code[offset + 1], next_offset, &ra);
 				offset += 2;
 				break;
 			case OP_STRUCT:
 				next_offset = offset + 3;
-				emit_op_struct(&buf, chunk, chunk->code[offset + 2], (obj_string_t *)value_as_obj(chunk->constants[chunk->code[offset + 1]]), next_offset, &ra);
+				emit_op_struct(&buf, chunk, offset, chunk->code[offset + 2], (obj_string_t *)value_as_obj(chunk->constants[chunk->code[offset + 1]]), next_offset, &ra);
 				offset += 3;
 				break;
 			case OP_CLOSURE:
@@ -2540,7 +2763,7 @@ bool jit_compile_function(obj_function_t *function) {
 				jump_operand = (uint16_t)((operand_a << 8) | chunk->code[offset + 2]);
 				next_offset = offset + 3;
 				target_bytecode_offset = offset + 3 + jump_operand;
-				forward_fixup_list_push(&forward_fixups, emit_op_try_call(&buf, chunk, next_offset, &epilogue_fixups, &ra), target_bytecode_offset);
+				forward_fixup_list_push(&forward_fixups, emit_op_try_call(&buf, chunk, offset, next_offset, target_bytecode_offset, &epilogue_fixups, &ra), target_bytecode_offset);
 				offset += 3;
 				break;
 			case OP_RETURN:
@@ -2559,16 +2782,66 @@ bool jit_compile_function(obj_function_t *function) {
 		// regardless of what opcode(s) computed the initializer. Real
 		// emitted code, not a compile-time-only decision. if this
 		// declaration sits inside a loop body, this same instruction
-		// naturally re-fires on every iteration, keeping the register
-		// correct each time, exactly like the interpreter's own
-		// memory-based locals already do implicitly. More than one
-		// binding can share the same decl_end if two register-allocated
-		// locals are declared back-to-back with no intervening opcode.
+		// naturally re-fires on every iteration via ordinary fall-through
+		// (the loop's own back-edge lands *before* this point, at
+		// native_offset_for_bytecode[loop_start], and falls through
+		// linearly down to here again), keeping the register correct
+		// each time, exactly like the interpreter's own memory-based
+		// locals already do implicitly. More than one binding can share
+		// the same decl_end if two register-allocated locals are
+		// declared back-to-back with no intervening opcode.
+		//
+		// Deliberately NOT also reachable by an arbitrary jump landing
+		// directly at this offset (native_offset_for_bytecode[offset]
+		// was already recorded above, before this): a loop's own
+		// back-edge can coincidentally target this exact bytecode
+		// position too (e.g. `int i = 0; while (...) {...}`, where `i`'s
+		// decl_end and the while's own loop_start are the same offset
+		// with nothing textually between them), and that back-edge must
+		// NOT re-run this sync -- it isn't bringing a freshly declared
+		// value, just re-checking the condition, and `i`'s register is
+		// already correctly up to date via its own OP_SET_LOCAL writes.
+		// OP_TRY_CALL's catch handler is the one place a jump genuinely
+		// does need this sync re-run on arrival; it gets its own
+		// dedicated sync block instead of relying on this shared one
+		// (see emit_op_try_call()'s own comment).
+		//
+		// For a VAL_OBJ-typed binding specifically, this also re-bakes
+		// the memory slot's *tag* half back to VAL_OBJ, not just the
+		// register's payload. emit_prologue() only bakes it once,
+		// unconditionally, before any opcode runs -- but for a
+		// non-parameter local that is also the very first thing this
+		// function ever pushes (slot 0 with no preceding locals, e.g.
+		// `fn f() { Point p = null; ... }`), the initializer expression
+		// itself writes to this exact memory before the local is
+		// "officially" declared, for the identical reason emit_gc_check's
+		// own decl_end guard exists (r14 == this slot's address at that
+		// point, since nothing has been pushed yet): `Point p = null;`'s
+		// own OP_NULL push writes {VAL_NULL, 0} directly into [r13+0],
+		// permanently stomping the prologue's VAL_OBJ tag with VAL_NULL,
+		// even once p later holds a real, non-null struct. This is
+		// invisible to a plain register read (emit_op_get_local()
+		// reconstructs the logical tag from the register's own
+		// zero-ness, never from memory), which is why this went
+		// unnoticed until a real GC collection: emit_gc_check()'s flush
+		// only ever writes the payload half (the tag is documented as
+		// "never rewritten there"), so a corrupted memory tag stays
+		// corrupted forever unless something fixes it here, and
+		// mark_value() silently skips a VAL_NULL-tagged cell regardless
+		// of what garbage payload sits next to it -- exactly the
+		// "flushed correctly, marked as unreachable anyway" bug this
+		// re-bake closes.
 		if (ok) {
 			int ri;
 
 			for (ri = 0; ri < ra.count; ri++) {
 				if (offset == ra.decl_end[ri]) {
+					if (ra.type[ri] == VAL_OBJ) {
+						int32_t disp = (int32_t)ra.slot[ri] * (int32_t)sizeof(value_t);
+
+						jit_emit_mov32_reg_imm32(&buf, JIT_RCX, (uint32_t)VAL_OBJ);
+						jit_emit_mov32_mem_reg(&buf, JIT_R13, disp, JIT_RCX);
+					}
 					jit_emit_mov_reg_mem(&buf, ra.reg[ri], JIT_R14, -8);
 				}
 			}

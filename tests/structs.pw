@@ -142,7 +142,74 @@ fn main() {
 
 	assert(sum_with_struct_in_loop(5) == 20, "a struct built inside a loop alongside a JIT register-allocated counter must not corrupt it");
 
+	register_cached_null_locals();
+	struct_survives_across_allocating_call();
+
 	print("structs: ok");
+}
+
+// A struct-typed local can be assigned `null` (any declared type unifies
+// with it), including one the JIT register-allocates (see
+// jit_compile.c's emit_op_get_local(): a VAL_OBJ-typed binding
+// reconstructs null-vs-real-object at runtime from whether its register
+// is zero, unlike a scalar binding's permanently fixed tag). Repeatedly
+// flips a register-cached struct local between null and a real value,
+// both compared against `null` and against each other, and separately
+// confirms a register-cached scalar local surviving a `null` assignment
+// still reads back correctly (compiler.c's disqualify_local_reg_slot():
+// a scalar's payload being 0 is ambiguous with a real 0, so a slot ever
+// assigned null falls back to ordinary memory-resident handling instead
+// of trying to reconstruct the tag the way an object binding does).
+fn register_cached_null_locals() {
+	Point p = null;
+	assert(p == null, "a struct local's own null initializer must read back as null");
+
+	p = Point.origin();
+	assert(p != null, "a struct local reassigned away from null must no longer compare equal to null");
+	assert(p.x == 0 && p.y == 0, "the reassigned struct's own fields must be readable");
+
+	p = null;
+	assert(p == null, "a struct local reassigned back to null must read back as null again");
+
+	int scalar = 5;
+	scalar += 1;
+	assert(scalar == 6, "an ordinary register-cached scalar must still work before any null assignment");
+	scalar = null;
+	assert(scalar == null, "a register-cached scalar local assigned null must read back as null, not a corrupted 0");
+}
+
+// A struct local held live across a call to a function that itself
+// allocates heavily (jit_compile.c's emit_gc_check() runs, and under
+// PAWELI_GC_STRESS=1 actually collects, at every OP_ARRAY/OP_STRUCT/
+// OP_CALL inside allocate_a_lot()'s own hot loop) exercises the actual
+// GC-safety fix this feature exists for: if a register-cached struct
+// local's live pointer were ever invisible to mark_roots() during one
+// of those collections, this would read back a freed/corrupted pointer
+// afterward instead of the same struct it held before the call.
+// Deliberately checked against a value computed independently of the
+// call (p.x/p.y set before allocate_a_lot() ever runs), so a stale or
+// swept-then-reused pointer would show up as a wrong field read here,
+// not just a crash.
+fn allocate_a_lot() -> int {
+	int total = 0;
+	int i = 0;
+
+	while (i < 200) {
+		Point junk_point = Point { x: i, y: i };
+		string[] junk_array = ["a", "b", "c"];
+		total = total + junk_point.x + stdlib.length(junk_array);
+		i = i + 1;
+	}
+
+	return total;
+}
+
+fn struct_survives_across_allocating_call() {
+	Point p = Point { x: 3, y: 6 };
+	int result = allocate_a_lot();
+
+	assert(p.x == 3 && p.y == 6, "a register-cached struct local must survive a call that triggers real allocation and collection");
+	assert(result == 20500, "the allocating call's own return value must still be correct");
 }
 
 // A hot loop counter (i) is exactly the kind of local the JIT's own

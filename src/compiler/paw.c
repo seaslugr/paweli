@@ -20,7 +20,20 @@
 // local_slot_count <= 0), silently losing the JIT's entire register
 // allocation feature (R1/R2a) for every distribution form except
 // running straight from .pw source.
-#define PAW_VERSION 2
+// v3: function bodies additionally carry local_reg_dead_at, one more
+// per-slot array the same shape as local_reg_decl_end (see chunk.h's
+// own comment on it). Needed once VAL_OBJ-typed locals became
+// register-eligible: emit_gc_check() (jit_compile.c) uses it to know
+// when a bound object local's own scope has closed, so its memory slot
+// stops being safe to flush a live register into. Without this field,
+// an old .paw/--bin file would read back 0 for every slot's dead_at
+// instead of the real value (or the (size_t)-1 "never dies" sentinel a
+// fresh compile produces for most slots) -- silently reintroducing the
+// exact GC-unsafety window this whole mechanism exists to close, for
+// every VAL_OBJ local in a function loaded that way. Bumping the
+// version makes an old file fail loudly (incompatible version) instead
+// of loading with this gap.
+#define PAW_VERSION 3
 
 #define PAW_FLAG_HAS_SOURCE 0x01
 
@@ -355,16 +368,17 @@ static bool writer_write_function_body(paw_writer_t *w, size_t index) {
 		}
 	}
 
-	// See chunk.h's own comment on these three fields: local_slot_count
-	// (and hence all three arrays) is 0/NULL for a chunk with no
+	// See chunk.h's own comment on these four fields: local_slot_count
+	// (and hence all four arrays) is 0/NULL for a chunk with no
 	// register-eligible locals at all, same as finalize_local_reg_info()
 	// itself leaves them for that case. Nothing to write beyond the
-	// count. local_reg_decl_end goes through w_i64 (not w_u32) since it
-	// legitimately needs the full 64-bit range: (size_t)-1 is its
-	// "not applicable" sentinel, and truncating that to 32 bits on write
-	// would silently reconstruct a different (if still practically
-	// never-matching) value on read. It is not a case worth relying on
-	// "probably still correct in practice" for.
+	// count. local_reg_decl_end/local_reg_dead_at both go through w_i64
+	// (not w_u32) since they legitimately need the full 64-bit range:
+	// (size_t)-1 is their shared "not applicable" sentinel, and
+	// truncating that to 32 bits on write would silently reconstruct a
+	// different (if still practically never-matching) value on read. It
+	// is not a case worth relying on "probably still correct in
+	// practice" for.
 	w_u32(w, (uint32_t)f->chunk.local_slot_count);
 	for (i = 0; i < (size_t)f->chunk.local_slot_count; i++) {
 		w_u8(w, f->chunk.local_reg_eligible[i] ? 1 : 0);
@@ -374,6 +388,9 @@ static bool writer_write_function_body(paw_writer_t *w, size_t index) {
 	}
 	for (i = 0; i < (size_t)f->chunk.local_slot_count; i++) {
 		w_i64(w, (int64_t)f->chunk.local_reg_decl_end[i]);
+	}
+	for (i = 0; i < (size_t)f->chunk.local_slot_count; i++) {
+		w_i64(w, (int64_t)f->chunk.local_reg_dead_at[i]);
 	}
 
 	return true;
@@ -960,6 +977,7 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 			f->chunk.local_reg_eligible = malloc((size_t)local_slot_count * sizeof(bool));
 			f->chunk.local_reg_types = malloc((size_t)local_slot_count * sizeof(value_type_t));
 			f->chunk.local_reg_decl_end = malloc((size_t)local_slot_count * sizeof(size_t));
+			f->chunk.local_reg_dead_at = malloc((size_t)local_slot_count * sizeof(size_t));
 			for (j = 0; j < local_slot_count; j++) {
 				f->chunk.local_reg_eligible[j] = r_u8(&r) != 0;
 			}
@@ -968,6 +986,9 @@ static paw_program_t *paw_load_from_buffer(char *raw, size_t raw_size, const cha
 			}
 			for (j = 0; j < local_slot_count; j++) {
 				f->chunk.local_reg_decl_end[j] = (size_t)r_i64(&r);
+			}
+			for (j = 0; j < local_slot_count; j++) {
+				f->chunk.local_reg_dead_at[j] = (size_t)r_i64(&r);
 			}
 		}
 	}

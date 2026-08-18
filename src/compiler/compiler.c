@@ -155,6 +155,21 @@ typedef struct compiler {
 	// (never read) for a parameter slot, which the JIT instead
 	// populates directly from frame->slots at function entry.
 	size_t local_reg_decl_end[MAX_LOCALS];
+	// Bytecode offset right after a register-eligible local's own
+	// scope-closing pop (end_scope()'s own comment on why only a real,
+	// permanent scope exit sets this, never a break/continue's
+	// temporary emit_pop_to_depth()). (size_t)-1 (the default, matching
+	// decl_end's own parameter sentinel) means the slot never explicitly
+	// closes before the function itself returns -- true for a
+	// parameter, and for any local declared directly in the function's
+	// own outermost scope. Meaningful only for a VAL_OBJ-typed binding:
+	// jit_compile.c's emit_gc_check() uses [decl_end, dead_at) as the
+	// bytecode-offset window during which this slot's memory is safe to
+	// flush a live register into, since outside that window the same
+	// address is ordinary operand-stack space that something else may
+	// already be using (see emit_gc_check()'s own comment for the two
+	// concrete failure shapes this guards against).
+	size_t local_reg_dead_at[MAX_LOCALS];
 	int local_slot_high_water;
 
 	// NULL for a top-level fn's own compiler_t (and for the file's
@@ -192,8 +207,9 @@ static double parse_float_literal(token_t token);
 static void begin_scope(compiler_t *compiler);
 static void end_scope(compiler_t *compiler, int line, int column);
 static bool identifiers_equal(token_t a, token_t b);
-static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype);
+static bool register_cacheable_value_type(type_t type, value_type_t *out_vtype);
 static void note_local_reg_slot(compiler_t *compiler, int slot, type_t type);
+static void disqualify_local_reg_slot(compiler_t *compiler, int slot);
 static void finalize_local_reg_info(compiler_t *compiler);
 static bool add_local(compiler_t *compiler, token_t name, type_t type, int line);
 static bool declare_local(compiler_t *compiler, token_t name, type_t type, int line);
@@ -455,6 +471,8 @@ static void begin_scope(compiler_t *compiler) {
 }
 
 static void end_scope(compiler_t *compiler, int line, int column) {
+	int slot;
+
 	compiler->scope_depth--;
 
 	while (compiler->local_count > 0 && compiler->locals[compiler->local_count - 1].depth > compiler->scope_depth) {
@@ -462,6 +480,15 @@ static void end_scope(compiler_t *compiler, int line, int column) {
 			emit_byte(compiler, OP_CLOSE_UPVALUE, line, column);
 		} else {
 			emit_byte(compiler, OP_POP, line, column);
+		}
+		// This slot's own memory stops being safe for emit_gc_check()
+		// to flush a bound register into once its scope has genuinely
+		// closed (as opposed to emit_pop_to_depth()'s break/continue
+		// pop, which doesn't reach here since the scope isn't really
+		// over on that path). See local_reg_dead_at's own comment.
+		slot = compiler->local_count - 1;
+		if (compiler->local_reg_eligible[slot]) {
+			compiler->local_reg_dead_at[slot] = current_chunk(compiler)->count;
 		}
 		compiler->local_count--;
 	}
@@ -475,13 +502,19 @@ static bool identifiers_equal(token_t a, token_t b) {
 }
 
 /* type qualifies for JIT register allocation (src/jit/jit_compile.c) iff
-   it's a scalar int/float/bool. An `int[]` local is a heap-allocated
-   obj_array_t* at runtime (VAL_OBJ), despite kind == TYPE_INT, hence the
-   array_depth check. On success, writes the matching runtime tag through
+   it's int/float/bool (VAL_INT/VAL_FLOAT/VAL_BOOL, a scalar payload with
+   a fixed, permanently-baked tag), or string/struct/closure/any array
+   (VAL_OBJ, a heap pointer whose logical tag src/jit/jit_compile.c's
+   emit_op_get_local() reconstructs at runtime from the payload: 0 means
+   null, nonzero means a real object -- see that function's own comment).
+   An `int[]` local is a heap-allocated obj_array_t* at runtime despite
+   kind == TYPE_INT, hence the array_depth check running before the
+   switch. On success, writes the matching runtime tag through
    out_vtype and returns true. */
-static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype) {
+static bool register_cacheable_value_type(type_t type, value_type_t *out_vtype) {
 	if (type.array_depth > 0) {
-		return false;
+		*out_vtype = VAL_OBJ;
+		return true;
 	}
 	switch (type.kind) {
 		case TYPE_INT:
@@ -493,6 +526,11 @@ static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype) {
 		case TYPE_BOOL:
 			*out_vtype = VAL_BOOL;
 			return true;
+		case TYPE_STRING:
+		case TYPE_STRUCT:
+		case TYPE_FUNCTION:
+			*out_vtype = VAL_OBJ;
+			return true;
 		default:
 			return false;
 	}
@@ -501,7 +539,7 @@ static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype) {
 /* Updates slot's register-eligibility as a new local_t claims it (see
    compiler_t's own comment on local_reg_seen/eligible/types/decl_end
    for why this is tracked separately from locals[] itself). A slot is
-   eligible only if it's numeric-scalar-typed AND claimed by exactly
+   eligible only if it's register-cacheable-typed AND claimed by exactly
    one local_t for the entire function: a *second* declaration reusing
    the same slot index (a sibling scope, after the first one closed)
    disqualifies it unconditionally, even if the type would have
@@ -509,20 +547,23 @@ static bool numeric_scalar_value_type(type_t type, value_type_t *out_vtype) {
    "types agree" because the JIT's own local_reg_decl_end mechanism
    (see compiler_t's comment on it) can only ever record one
    declaration point per slot; a second one would be silently
-   ignored, which numeric type-matching alone wouldn't catch. Once
-   disqualified, a slot never becomes eligible again. */
+   ignored, which type-matching alone wouldn't catch. Once
+   disqualified, a slot never becomes eligible again (see also
+   disqualify_local_reg_slot() below, the other way a slot loses
+   eligibility after already being seen). */
 static void note_local_reg_slot(compiler_t *compiler, int slot, type_t type) {
 	value_type_t vtype;
-	bool numeric;
+	bool cacheable;
 
-	numeric = numeric_scalar_value_type(type, &vtype);
+	cacheable = register_cacheable_value_type(type, &vtype);
 
 	if (!compiler->local_reg_seen[slot]) {
 		compiler->local_reg_seen[slot] = true;
-		compiler->local_reg_eligible[slot] = numeric;
-		if (numeric) {
+		compiler->local_reg_eligible[slot] = cacheable;
+		if (cacheable) {
 			compiler->local_reg_types[slot] = vtype;
 			compiler->local_reg_decl_end[slot] = current_chunk(compiler)->count;
+			compiler->local_reg_dead_at[slot] = (size_t)-1;
 		}
 	} else {
 		compiler->local_reg_eligible[slot] = false;
@@ -531,6 +572,23 @@ static void note_local_reg_slot(compiler_t *compiler, int slot, type_t type) {
 	if (slot + 1 > compiler->local_slot_high_water) {
 		compiler->local_slot_high_water = slot + 1;
 	}
+}
+
+/* Revokes slot's register-eligibility outright, whether or not it was
+   ever eligible to begin with (harmless no-op if not). Used for a
+   scalar-typed slot the compiler can see a `null` literal ever flow
+   into (compile_var_decl()/compile_assign_expr(), whenever the
+   assigned value's static type is TYPE_NULL): unlike an object pointer,
+   a scalar's payload being 0 is ambiguous with the real value 0, so
+   there is no runtime sentinel available to reconstruct VAL_NULL the
+   way emit_op_get_local() does for VAL_OBJ. Falling back to this slot's
+   existing, already-correct memory-resident handling (a real VAL_NULL
+   tag written to memory, same as any other local) is simpler than
+   inventing a side channel. Only ever meaningful for a slot already
+   marked local_reg_seen; called before that is a no-op since
+   note_local_reg_slot() would just overwrite whatever this set. */
+static void disqualify_local_reg_slot(compiler_t *compiler, int slot) {
+	compiler->local_reg_eligible[slot] = false;
 }
 
 /* Copies compiler's per-slot register-eligibility table onto its own
@@ -554,10 +612,12 @@ static void finalize_local_reg_info(compiler_t *compiler) {
 	chunk->local_reg_eligible = malloc((size_t)count * sizeof(bool));
 	chunk->local_reg_types = malloc((size_t)count * sizeof(value_type_t));
 	chunk->local_reg_decl_end = malloc((size_t)count * sizeof(size_t));
+	chunk->local_reg_dead_at = malloc((size_t)count * sizeof(size_t));
 	for (i = 0; i < count; i++) {
 		chunk->local_reg_eligible[i] = compiler->local_reg_eligible[i];
 		chunk->local_reg_types[i] = compiler->local_reg_types[i];
 		chunk->local_reg_decl_end[i] = compiler->local_reg_decl_end[i];
+		chunk->local_reg_dead_at[i] = compiler->local_reg_dead_at[i];
 	}
 }
 
@@ -1214,6 +1274,7 @@ static void compile_function_decl(const ast_node_t *fn_node, const signature_t *
 	memset(compiler.local_reg_seen, 0, sizeof(compiler.local_reg_seen));
 	memset(compiler.local_reg_eligible, 0, sizeof(compiler.local_reg_eligible));
 	memset(compiler.local_reg_decl_end, 0, sizeof(compiler.local_reg_decl_end));
+	memset(compiler.local_reg_dead_at, 0, sizeof(compiler.local_reg_dead_at));
 	compiler.local_slot_high_water = 0;
 	// A top-level fn has no enclosing scope: nothing to capture, ever.
 	compiler.enclosing = NULL;
@@ -1385,6 +1446,7 @@ static void compile_closure_body(compiler_t *compiler, const ast_list_t *params,
 	memset(inner.local_reg_seen, 0, sizeof(inner.local_reg_seen));
 	memset(inner.local_reg_eligible, 0, sizeof(inner.local_reg_eligible));
 	memset(inner.local_reg_decl_end, 0, sizeof(inner.local_reg_decl_end));
+	memset(inner.local_reg_dead_at, 0, sizeof(inner.local_reg_dead_at));
 	inner.local_slot_high_water = 0;
 	inner.enclosing = compiler;
 	inner.upvalue_count = 0;
@@ -1466,11 +1528,31 @@ static void compile_nested_function_decl(compiler_t *compiler, const ast_node_t 
 
 	fn_type = type_function(ft);
 
-	if (declare_local(compiler, name, fn_type, node->line)) {
-		mark_initialized(compiler);
-	}
+	{
+		int slot = -1;
 
-	compile_closure_body(compiler, &node->as.function_decl.params, node->as.function_decl.body, param_types, param_count, return_type, has_return_type, name, node->line, node->column);
+		if (declare_local(compiler, name, fn_type, node->line)) {
+			slot = compiler->local_count - 1;
+			mark_initialized(compiler);
+		}
+
+		// Unlike a plain compile_var_decl(), this local is declared
+		// (for self-recursion) BEFORE its own OP_CLOSURE has even been
+		// emitted, so note_local_reg_slot() (inside declare_local()
+		// above) recorded local_reg_decl_end[slot] too early -- right
+		// before OP_CLOSURE, not right after. Harmless while a
+		// TYPE_FUNCTION local could never be register-eligible, but
+		// now that it can be, a stale decl_end there would make the
+		// JIT sync this slot's bound register from whatever was on the
+		// stack *before* the closure was actually built. Corrected
+		// here, after the fact, once OP_CLOSURE has genuinely been
+		// emitted into this chunk.
+		compile_closure_body(compiler, &node->as.function_decl.params, node->as.function_decl.body, param_types, param_count, return_type, has_return_type, name, node->line, node->column);
+
+		if (slot >= 0 && compiler->local_reg_eligible[slot]) {
+			compiler->local_reg_decl_end[slot] = current_chunk(compiler)->count;
+		}
+	}
 }
 
 /* `fn(TYPE NAME, ...) -> TYPE { ... }` in expression position (parsed by
@@ -1708,6 +1790,13 @@ static void compile_var_decl(compiler_t *compiler, const ast_node_t *node) {
 
 	if (declare_local(compiler, node->as.var_decl.name, declared_type, node->line)) {
 		mark_initialized(compiler);
+		if (initializer_type.kind == TYPE_NULL) {
+			value_type_t vtype;
+
+			if (register_cacheable_value_type(declared_type, &vtype) && vtype != VAL_OBJ) {
+				disqualify_local_reg_slot(compiler, compiler->local_count - 1);
+			}
+		}
 	}
 }
 
@@ -2201,6 +2290,18 @@ static type_t compile_assign_expr(compiler_t *compiler, const ast_node_t *node) 
 			value_type = compile_expr_typed(compiler, node->as.assign_expr.value, &target_type);
 			if (!type_is_assignable(target_type, value_type)) {
 				compiler_error(compiler, node->line, node->column, "compiler::type-mismatch", "cannot assign a %s value to a %s variable", type_to_string(value_type), type_to_string(target_type));
+			}
+			// A later `x = null;` is just as ambiguous for a register-
+			// cached scalar as an initializer's `null` is (see
+			// disqualify_local_reg_slot()'s own comment); compound
+			// assignment can never produce TYPE_NULL, so only this
+			// branch needs the check.
+			if (value_type.kind == TYPE_NULL) {
+				value_type_t vtype;
+
+				if (register_cacheable_value_type(target_type, &vtype) && vtype != VAL_OBJ) {
+					disqualify_local_reg_slot(compiler, slot);
+				}
 			}
 		}
 		emit_bytes(compiler, OP_SET_LOCAL, (uint8_t)slot, node->line, node->column);
@@ -3459,6 +3560,7 @@ obj_function_t *compiler_compile(const ast_node_t *program, const char *filename
 	memset(script.local_reg_seen, 0, sizeof(script.local_reg_seen));
 	memset(script.local_reg_eligible, 0, sizeof(script.local_reg_eligible));
 	memset(script.local_reg_decl_end, 0, sizeof(script.local_reg_decl_end));
+	memset(script.local_reg_dead_at, 0, sizeof(script.local_reg_dead_at));
 	script.local_slot_high_water = 0;
 	script.enclosing = NULL;
 	script.upvalue_count = 0;

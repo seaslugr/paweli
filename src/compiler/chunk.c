@@ -21,6 +21,7 @@ void chunk_init(chunk_t *chunk) {
 	chunk->local_reg_eligible = NULL;
 	chunk->local_reg_types = NULL;
 	chunk->local_reg_decl_end = NULL;
+	chunk->local_reg_dead_at = NULL;
 	chunk->local_slot_count = 0;
 }
 
@@ -31,6 +32,7 @@ void chunk_free(chunk_t *chunk) {
 	free(chunk->constants);
 	free(chunk->local_reg_eligible);
 	free(chunk->local_reg_decl_end);
+	free(chunk->local_reg_dead_at);
 	free(chunk->local_reg_types);
 	chunk_init(chunk);
 }
