@@ -194,7 +194,7 @@ fn test_range_for() {
 	for (int i : 0..10) {
 		sum = sum + i;
 	}
-	assert(sum == 45, "range 0..10 sums 0 through 9");
+	assert(sum == 55, "range 0..10 sums 0 through 10, inclusive");
 }
 
 fn test_range_for_break_continue() {
@@ -213,10 +213,10 @@ fn test_range_for_break_continue() {
 
 fn test_range_for_empty() {
 	int never = 0;
-	for (int i : 5..5) {
+	for (int i : 5..4) {
 		never = never + 1;
 	}
-	assert(never == 0, "an empty range does nothing");
+	assert(never == 0, "a range whose end is before its start does nothing");
 }
 
 fn test_range_for_nested() {
@@ -226,7 +226,7 @@ fn test_range_for_nested() {
 			product_sum = product_sum + a * b;
 		}
 	}
-	assert(product_sum == 9, "nested range loops don't interfere with each other");
+	assert(product_sum == 36, "nested range loops don't interfere with each other");
 }
 
 fn main() {

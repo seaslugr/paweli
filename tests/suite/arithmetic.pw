@@ -123,6 +123,39 @@ fn test_compound_assign_struct_field() {
 
 // The target's sub-expressions (an index or member access) must run
 // exactly once, not once for the read and again for the write.
+// Unary '-' applied directly to an int literal is constant-folded at
+// compile time (see parse_negated_int_literal in compiler.c) instead of
+// negated at runtime, specifically so INT64_MIN can be written at all:
+// its digits alone (9223372036854775808) overflow a 64-bit int, only
+// the negated value fits.
+fn test_negative_int_literals() {
+	int neg = -32;
+	assert(neg == 0 - 32, "a negative literal is just an int, not special syntax");
+
+	int y = 100;
+	assert(y - 32 == 68, "binary subtraction is unaffected by unary-minus literal folding");
+
+	assert(-(-5) == 5, "double negation still runs a real negate at runtime for the outer '-'");
+
+	int min = -9223372036854775808;
+	assert(min == INT64_MIN, "the most negative int64 literal round-trips exactly");
+	assert(min + 1 == -9223372036854775807);
+}
+
+// There is only one int type (see literals.md): a signed 64-bit
+// int64_t. These constants exist purely to spell out the range
+// boundaries of narrower widths a value might have come from, not
+// evidence of int8/int16/int32 as real distinct types.
+fn test_int_limit_constants() {
+	assert(INT8_MIN == -128 && INT8_MAX == 127);
+	assert(INT16_MIN == -32768 && INT16_MAX == 32767);
+	assert(INT32_MIN == -2147483648 && INT32_MAX == 2147483647);
+	assert(INT64_MIN == -9223372036854775808 && INT64_MAX == 9223372036854775807);
+
+	int max32 = INT32_MAX;
+	assert(max32 + 1 == 2147483648, "INT32_MAX is a plain 64-bit int, so it doesn't wrap at 32 bits");
+}
+
 fn test_compound_assign_single_evaluation() {
 	int side_effect_calls = 0;
 
@@ -152,4 +185,6 @@ fn main() {
 	export test_compound_assign_array;
 	export test_compound_assign_struct_field;
 	export test_compound_assign_single_evaluation;
+	export test_negative_int_literals;
+	export test_int_limit_constants;
 }

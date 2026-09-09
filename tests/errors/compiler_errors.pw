@@ -100,3 +100,17 @@ fn nested_array_element_type_mismatch() {
 fn nested_array_inner_type_mismatch() {
 	int[][] grid = [[1, 2], ["a", "b"]];
 }
+
+// An int literal's digits are checked against int64_t's range at
+// compile time now, rather than silently clamping via strtoull's own
+// ERANGE behavior the way this used to work.
+fn int_literal_too_large() {
+	int x = 99999999999999999999;
+}
+
+// The negated-literal path (parse_negated_int_literal) has its own,
+// one-lower bound (INT64_MIN's magnitude, 2^63, is one more than
+// INT64_MAX's), so it needs its own out-of-range case here too.
+fn negated_int_literal_too_small() {
+	int x = -9223372036854775809;
+}

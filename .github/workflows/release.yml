@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check tag matches src/version.h
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          major=$(grep -oP '(?<=PAWELI_VERSION_MAJOR )\d+' src/version.h)
+          minor=$(grep -oP '(?<=PAWELI_VERSION_MINOR )\d+' src/version.h)
+          patch=$(grep -oP '(?<=PAWELI_VERSION_PATCH )\d+' src/version.h)
+          header_version="${major}.${minor}.${patch}"
+          if [ "${tag}" != "${header_version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match src/version.h (${header_version})" >&2
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Build release binary
+        run: |
+          cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/release
+
+      - name: Package binary and checksum
+        run: |
+          mkdir -p dist
+          asset="paweli-${GITHUB_REF_NAME}-linux-x86_64"
+          cp build/release/paweli "dist/${asset}"
+          chmod +x "dist/${asset}"
+          ( cd dist && sha256sum "${asset}" > "${asset}.sha256" )
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

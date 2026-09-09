@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -202,7 +203,9 @@ static void emit_loop(compiler_t *compiler, size_t loop_start, int line, int col
 static void emit_constant(compiler_t *compiler, value_t value, int line, int column);
 static void emit_name_op_str(compiler_t *compiler, uint8_t opcode, const char *name, size_t length, int line, int column);
 static void patch_name_op(compiler_t *compiler, size_t offset, const char *name, size_t length, int line, int column);
-static int64_t parse_int_literal(token_t token);
+static uint64_t parse_int_literal_magnitude(token_t token, bool *out_overflow);
+static int64_t parse_int_literal(compiler_t *compiler, token_t token, int line, int column);
+static int64_t parse_negated_int_literal(compiler_t *compiler, token_t token, int line, int column);
 static double parse_float_literal(token_t token);
 
 static void begin_scope(compiler_t *compiler);
@@ -448,16 +451,61 @@ static void patch_name_op(compiler_t *compiler, size_t offset, const char *name,
    guaranteed to be non-numeric: strtod in particular would happily read
    past the token into whatever source text follows, for example an
    exponent suffix. Copy into a bounded buffer first, so parsing cannot
-   run past the token's actual end. */
-static int64_t parse_int_literal(token_t token) {
+   run past the token's actual end.
+
+   Parses as an unsigned magnitude rather than straight into int64_t so
+   that callers combining it with a leading unary '-' (see
+   parse_negated_int_literal below) can accept a magnitude of exactly
+   2^63 -- the literal digits of INT64_MIN, which don't fit in an
+   int64_t themselves even though the negated value does. */
+static uint64_t parse_int_literal_magnitude(token_t token, bool *out_overflow) {
 	char buffer[64];
 	size_t length;
+	uint64_t magnitude;
 
 	length = token.length < sizeof(buffer) - 1 ? token.length : sizeof(buffer) - 1;
 	memcpy(buffer, token.start, length);
 	buffer[length] = '\0';
 
-	return strtoll(buffer, NULL, 10);
+	errno = 0;
+	magnitude = strtoull(buffer, NULL, 10);
+	*out_overflow = errno == ERANGE;
+	return magnitude;
+}
+
+static int64_t parse_int_literal(compiler_t *compiler, token_t token, int line, int column) {
+	bool overflow;
+	uint64_t magnitude;
+
+	magnitude = parse_int_literal_magnitude(token, &overflow);
+	if (overflow || magnitude > (uint64_t)INT64_MAX) {
+		compiler_error(compiler, line, column, (int)token.length, "compiler::int-literal-overflow", "integer literal '%.*s' is too large for a 64-bit int (max %lld)", (int)token.length, token.start, (long long)INT64_MAX);
+		return 0;
+	}
+	return (int64_t)magnitude;
+}
+
+/* Constant-folds unary '-' applied directly to an int literal (see the
+   AST_UNARY_EXPR case in compile_unary_expr) instead of emitting the
+   positive literal followed by a runtime OP_NEGATE. Without this,
+   INT64_MIN (-9223372036854775808) could never be written at all: its
+   digits alone (9223372036854775808) overflow int64_t, so
+   parse_int_literal would reject it before a negation ever had a
+   chance to bring it back into range. Two's-complement wraparound
+   (0 - magnitude, computed unsigned, then reinterpreted as signed)
+   produces the correct result for every in-range magnitude, INT64_MIN
+   included, without ever forming an unrepresentable positive value
+   along the way. */
+static int64_t parse_negated_int_literal(compiler_t *compiler, token_t token, int line, int column) {
+	bool overflow;
+	uint64_t magnitude;
+
+	magnitude = parse_int_literal_magnitude(token, &overflow);
+	if (overflow || magnitude > 9223372036854775808ULL) {
+		compiler_error(compiler, line, column, (int)token.length, "compiler::int-literal-overflow", "integer literal '-%.*s' is too small for a 64-bit int (min %lld)", (int)token.length, token.start, (long long)INT64_MIN);
+		return 0;
+	}
+	return (int64_t)(0ULL - magnitude);
 }
 
 static double parse_float_literal(token_t token) {
@@ -2206,7 +2254,7 @@ static type_t compile_expr_typed(compiler_t *compiler, const ast_node_t *node, c
 		case AST_TRY_EXPR:
 			return compile_try_expr(compiler, node);
 		case AST_INT_LITERAL:
-			emit_constant(compiler, value_int(parse_int_literal(node->as.literal.token)), node->line, node->column);
+			emit_constant(compiler, value_int(parse_int_literal(compiler, node->as.literal.token, node->line, node->column)), node->line, node->column);
 			return type_int();
 		case AST_FLOAT_LITERAL:
 			emit_constant(compiler, value_float(parse_float_literal(node->as.literal.token)), node->line, node->column);
@@ -2590,8 +2638,20 @@ static type_t compile_logical_expr(compiler_t *compiler, const ast_node_t *node)
 
 static type_t compile_unary_expr(compiler_t *compiler, const ast_node_t *node) {
 	type_t operand_type;
+	const ast_node_t *operand;
 
-	operand_type = compile_expr_typed(compiler, node->as.unary_expr.operand, NULL);
+	operand = node->as.unary_expr.operand;
+
+	// Constant-fold '-' directly against an int literal's digits rather
+	// than compiling the literal as a positive value and negating it at
+	// runtime: see parse_negated_int_literal's comment for why this is
+	// the only way INT64_MIN can be written at all.
+	if (node->as.unary_expr.op == TOKEN_MINUS && operand->kind == AST_INT_LITERAL) {
+		emit_constant(compiler, value_int(parse_negated_int_literal(compiler, operand->as.literal.token, node->line, node->column)), node->line, node->column);
+		return type_int();
+	}
+
+	operand_type = compile_expr_typed(compiler, operand, NULL);
 
 	switch (node->as.unary_expr.op) {
 		case TOKEN_MINUS:
@@ -2764,6 +2824,38 @@ static type_t compile_function_value_ref(compiler_t *compiler, const ast_node_t 
 	return type_function(ft);
 }
 
+// Builtin named int constants, resolved as ordinary identifiers by
+// compile_identifier_expr below (after locals/upvalues/functions/
+// modules/user globals all miss, so a user global of the same name
+// still wins). There is only one int type in paweli (a signed 64-bit
+// int64_t, see literals.md), so these exist purely to spell out the
+// range boundaries of the narrower widths a value might have come
+// from (e.g. truncating a 32-bit field read from external data) -
+// they are not evidence of, or a step toward, int8/int16/int32 as
+// actual distinct types.
+typedef struct {
+	const char *name;
+	int64_t value;
+} int_limit_const_t;
+
+static const int_limit_const_t g_int_limit_consts[] = {
+	{"INT8_MIN", INT8_MIN}, {"INT8_MAX", INT8_MAX},
+	{"INT16_MIN", INT16_MIN}, {"INT16_MAX", INT16_MAX},
+	{"INT32_MIN", INT32_MIN}, {"INT32_MAX", INT32_MAX},
+	{"INT64_MIN", INT64_MIN}, {"INT64_MAX", INT64_MAX},
+};
+
+static const int_limit_const_t *find_int_limit_const(const char *name, size_t name_length) {
+	size_t i;
+
+	for (i = 0; i < sizeof(g_int_limit_consts) / sizeof(g_int_limit_consts[0]); i++) {
+		if (strlen(g_int_limit_consts[i].name) == name_length && memcmp(g_int_limit_consts[i].name, name, name_length) == 0) {
+			return &g_int_limit_consts[i];
+		}
+	}
+	return NULL;
+}
+
 static type_t compile_identifier_expr(compiler_t *compiler, const ast_node_t *node, const type_t *expected) {
 	int slot;
 	int upvalue;
@@ -2803,6 +2895,14 @@ static type_t compile_identifier_expr(compiler_t *compiler, const ast_node_t *no
 		if (global_def != NULL) {
 			emit_name_op_str(compiler, OP_GET_GLOBAL, name.start, name.length, node->line, node->column);
 			return global_def->type;
+		}
+	}
+
+	{
+		const int_limit_const_t *limit_const = find_int_limit_const(name.start, name.length);
+		if (limit_const != NULL) {
+			emit_constant(compiler, value_int(limit_const->value), node->line, node->column);
+			return type_int();
 		}
 	}
 

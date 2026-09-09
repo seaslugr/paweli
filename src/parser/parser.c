@@ -821,13 +821,13 @@ static ast_node_t *parse_typed_for_stmt(parser_t *parser, int line, int column) 
 			consume(parser, TOKEN_RPAREN, "expected ')' after for-loop range");
 			body = parse_block(parser);
 
-			// { T $for_range_end = end; for (T name = start; name < $for_range_end; name = name + 1) body }
+			// { T $for_range_end = end; for (T name = start; name <= $for_range_end; name = name + 1) body }
 			range_end_name = synthetic_token(TOKEN_IDENTIFIER, "$for_range_end", decl_line, decl_column);
 			one_literal = synthetic_token(TOKEN_INT_LITERAL, "1", decl_line, decl_column);
 
 			range_end_decl = ast_new_var_decl(type, range_end_name, end_expr, decl_line, decl_column);
 			initializer = ast_new_var_decl(type, name, first_expr, decl_line, decl_column);
-			condition = ast_new_binary_expr(TOKEN_LESS, ast_new_identifier_expr(name, decl_line, decl_column), ast_new_identifier_expr(range_end_name, decl_line, decl_column), decl_line, decl_column);
+			condition = ast_new_binary_expr(TOKEN_LESS_EQUAL, ast_new_identifier_expr(name, decl_line, decl_column), ast_new_identifier_expr(range_end_name, decl_line, decl_column), decl_line, decl_column);
 			increment = ast_new_assign_expr(
 				ast_new_identifier_expr(name, decl_line, decl_column),
 				ast_new_binary_expr(TOKEN_PLUS, ast_new_identifier_expr(name, decl_line, decl_column), ast_new_literal(AST_INT_LITERAL, one_literal, decl_line, decl_column), decl_line, decl_column),

@@ -26,6 +26,8 @@
 @test fn test_arithmetic_compound_assign_array() { arithmetic.test_compound_assign_array(); }
 @test fn test_arithmetic_compound_assign_struct_field() { arithmetic.test_compound_assign_struct_field(); }
 @test fn test_arithmetic_compound_assign_single_evaluation() { arithmetic.test_compound_assign_single_evaluation(); }
+@test fn test_arithmetic_negative_int_literals() { arithmetic.test_negative_int_literals(); }
+@test fn test_arithmetic_int_limit_constants() { arithmetic.test_int_limit_constants(); }
 
 @test fn test_arrays_basic() { arrays.test_basic(); }
 @test fn test_arrays_push_pop() { arrays.test_push_pop(); }
