@@ -1913,9 +1913,10 @@ static void emit_op_array(jit_asm_t *a, const chunk_t *chunk, size_t offset, uin
    but no register is guaranteed free scratch for that here: r15/r10/r11
    may each be the JIT's own register-allocated locals for the whole
    function (select_register_locals()), so this file's own call-site
-   scratch registers can no longer assume any of them are free. Held on
-   the native x86 stack instead, mirroring emit_op_array()'s own stash
-   above for the identical reason. */
+   scratch registers can no longer assume any of them are free. This is
+   the exact bug class already found and fixed once for this same
+   function. Held on the native x86 stack instead, mirroring
+   emit_op_array()'s own stash above for the identical reason. */
 static void emit_op_struct(jit_asm_t *a, const chunk_t *chunk, size_t offset, uint8_t count, obj_string_t *type_name, size_t next_offset, const jit_reg_alloc_t *ra) {
 	int32_t src_base;
 	int i;
