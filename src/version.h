@@ -1,7 +1,7 @@
 #pragma once
 
 #define PAWELI_VERSION_MAJOR 0
-#define PAWELI_VERSION_MINOR 1
+#define PAWELI_VERSION_MINOR 2
 #define PAWELI_VERSION_PATCH 0
 
 #define PAWELI_STRINGIFY_(x) #x
