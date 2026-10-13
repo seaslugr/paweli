@@ -19,6 +19,17 @@ fn test_split() {
 	assert(multi_char[1] == "two");
 }
 
+fn test_concatenation() {
+	string a = "foo";
+	string b = "bar";
+	assert(a + b == "foobar");
+	assert("foo" + "bar" == stdlib.concat("foo", "bar"));
+
+	string c = "foo";
+	c += "bar";
+	assert(c == "foobar");
+}
+
 fn test_indexing() {
 	string s = "3 + 4";
 	assert(s[0] == "3");
@@ -37,8 +48,34 @@ fn test_foreach_characters() {
 	assert(chars == "abc", "foreach over a string iterates its characters");
 }
 
+// Regression test for a JIT bug found in review: the JIT's shared
+// arithmetic slow path (emit_call_binary_slow_path, jit_compile.c)
+// used to assume vm_binary_op()/vm_bitwise_op() never allocate, but
+// OP_ADD on two strings does (object_new_string_concat()). A JIT'd
+// loop doing nothing but string concatenation reached that slow path
+// on every iteration with no paired emit_gc_check(), so the heap grew
+// without bound. This is also exercised under PAWELI_GC_SAFEPOINT_CHECK
+// (scripts/run_tests.sh runs the whole suite with it on by default),
+// which aborts immediately if that gap ever regresses instead of just
+// quietly using more memory.
+fn build_repeated(int count) -> int {
+	string s = "";
+	int i = 0;
+	while (i < count) {
+		s = s + "x";
+		i = i + 1;
+	}
+	return stdlib.length(s);
+}
+
+fn test_jit_string_concat_loop() {
+	assert(build_repeated(8000) == 8000, "a JIT-compiled hot loop of nothing but string concatenation must still produce the correct length");
+}
+
 fn main() {
 	export test_split;
+	export test_concatenation;
 	export test_indexing;
 	export test_foreach_characters;
+	export test_jit_string_concat_loop;
 }

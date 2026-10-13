@@ -2509,6 +2509,12 @@ static type_t check_arithmetic_or_bitwise(compiler_t *compiler, uint8_t opcode, 
 		return type_int();
 	}
 
+	// `+` on two strings concatenates instead of adding, matching the
+	// runtime's own OP_ADD string branch (src/runtime/vm.c's binary_op()).
+	if (opcode == OP_ADD && type_equals(left_type, type_string()) && type_equals(right_type, type_string())) {
+		return type_string();
+	}
+
 	if (!type_is_numeric(left_type)) {
 		compiler_error(compiler, left_node->line, left_node->column, 0, "compiler::type-mismatch", "left operand must be int or float, got %s", type_to_string(left_type));
 	}

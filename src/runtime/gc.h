@@ -5,7 +5,32 @@
 #define GC_INITIAL_THRESHOLD (1024 * 1024)
 #define GC_HEAP_GROW_FACTOR 2
 
+// How much can accumulate in bytes_since_safepoint (gc_heap_t, object.h)
+// before gc_heap_note_alloc() concludes that safepoints have stopped
+// running somewhere on the current code path and aborts. Deliberately
+// far above any single legitimate allocation this codebase ever makes
+// in one safepoint-to-safepoint window (no bulk data structures), so it
+// only trips on the specific bug class it exists to catch: an
+// allocating call reachable from JIT-generated code with no paired
+// emit_gc_check(), left allocating in an unbounded loop with nothing
+// else in the same function ever reaching a safepoint.
+#define GC_SAFEPOINT_STALENESS_LIMIT (16 * 1024 * 1024)
+
 void gc_heap_init(gc_heap_t *heap);
+
+// Every heap allocation must funnel through here instead of touching
+// heap->bytes_allocated directly (see object.c), so PAWELI_GC_SAFEPOINT_CHECK
+// has one place to also track bytes_since_safepoint.
+void gc_heap_note_alloc(gc_heap_t *heap, size_t size);
+
+// Called from every sanctioned GC safepoint (vm.c's run() loop; the
+// equivalent point in JIT-generated code is emitted directly by
+// emit_gc_check() in src/jit/jit_compile.c rather than calling this,
+// since it's cheaper to zero one field in place than to emit a real
+// call). Resets bytes_since_safepoint regardless of whether a
+// collection actually ran this time -- reaching the check at all is
+// what counts, not the outcome.
+void gc_note_safepoint(gc_heap_t *heap);
 
 /* Runs one full mark-sweep cycle on vm: traces every value reachable from
    its roots (value stack, call frames, globals table), then frees every

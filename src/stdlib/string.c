@@ -72,7 +72,6 @@ static bool stdlib_to_upper(vm_t *vm, int arg_count, value_t *args, value_t *out
 static bool stdlib_concat(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	obj_string_t *a;
 	obj_string_t *b;
-	char *buffer;
 	obj_string_t *result;
 
 	if (!stdlib_check_arity(vm, "concat", arg_count, 2)) {
@@ -85,13 +84,7 @@ static bool stdlib_concat(vm_t *vm, int arg_count, value_t *args, value_t *out_r
 	a = (obj_string_t *)value_as_obj(args[0]);
 	b = (obj_string_t *)value_as_obj(args[1]);
 
-	buffer = malloc(a->length + b->length + 1);
-	memcpy(buffer, a->chars, a->length);
-	memcpy(buffer + a->length, b->chars, b->length);
-	buffer[a->length + b->length] = '\0';
-
-	result = object_new_string(vm->heap, vm->strings, buffer, a->length + b->length);
-	free(buffer);
+	result = object_new_string_concat(vm->heap, vm->strings, a, b);
 
 	*out_result = value_obj((obj_t *)result);
 	return true;

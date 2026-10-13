@@ -57,6 +57,57 @@
 // default case and aborts compilation for the whole function, so an
 // unsupported function is simply left to interpret forever (see
 // jit_compile.h).
+//
+// Opcode reference: every opcode this file compiles, its emitter, and
+// whether it can reach an allocation (and so needs emit_gc_check()
+// before the call that might). Kept as a table, not prose, so the next
+// audit of this file's GC-safety story is a lookup instead of a re-grep
+// of 2900 lines (see the review that found the OP_ADD gap this table
+// exists to prevent recurring). If you add JIT support for a new
+// opcode, or change what a helper it already calls does, update this
+// row, not just the code.
+//
+//   opcode                          emitter                        allocates?
+//   ------------------------------  -----------------------------  ----------
+//   OP_CONSTANT                     emit_op_constant               no
+//   OP_NULL/TRUE/FALSE              emit_push_immediate            no
+//   OP_POP                          (inline)                       no
+//   OP_DUP_N                        emit_op_dup_n                  no
+//   OP_GET_LOCAL/SET_LOCAL          emit_op_get_local/set_local    no
+//   OP_EQUAL/NOT_EQUAL               emit_op_comparison_bool        no (value_equals() never allocates)
+//   OP_LESS.../OP_ADD/SUBTRACT/     emit_op_arith_or_cmp           OP_ADD only, string+string operands,
+//     MULTIPLY (fast path: int/float   -> emit_call_binary_slow_path   via jit_binary_op_may_allocate()
+//     hardware ops; slow path: C)                                     (see its own comment)
+//   OP_DIVIDE/MODULO                emit_op_div_mod                no (vm_binary_op() never allocates
+//                                     -> emit_call_binary_slow_path    for these two ops)
+//   OP_BIT_AND/OR/XOR               emit_op_bitwise_and_or_xor     no (vm_bitwise_op() never allocates)
+//                                     -> emit_call_binary_slow_path
+//   OP_SHIFT_LEFT/RIGHT             emit_op_shift                  no (vm_bitwise_op() never allocates)
+//                                     -> emit_call_binary_slow_path
+//   OP_NOT                          emit_op_not                    no
+//   OP_NEGATE                       emit_op_negate                 no (error path only, fixed buffers)
+//   OP_BIT_NOT                      emit_op_bit_not                no (error path only, fixed buffers)
+//   OP_JUMP/JUMP_IF_FALSE/LOOP      (inline)/emit_op_jump_if_false no
+//   OP_GET_GLOBAL/SET_GLOBAL        emit_op_get_global/set_global  no (table_get_entry() never allocates)
+//   OP_CALL                         emit_op_call                   yes -- arbitrary paweli code
+//   OP_GET_INDEX                    emit_op_get_index              slow path only (string indexing
+//                                                                    builds a 1-char string); fast
+//                                                                    (array) path never allocates
+//   OP_SET_INDEX                    emit_op_set_index              no (vm_set_index() never allocates)
+//   OP_GET_FIELD/SET_FIELD          emit_op_get_field/set_field    no
+//   OP_ARRAY                        emit_op_array                  yes -- object_new_array() and every
+//                                                                    object_array_push() (can realloc)
+//   OP_STRUCT                       emit_op_struct                 yes -- object_new_struct()
+//   OP_CLOSURE                      emit_op_closure                yes -- vm_make_closure()
+//   OP_GET_UPVALUE/SET_UPVALUE      emit_op_get_upvalue/set_upvalue no
+//   OP_CLOSE_UPVALUE                emit_op_close_upvalue          no (vm_close_upvalues_from() never
+//                                                                    allocates, only boxes already do)
+//   OP_THROW                        emit_op_throw                  no (error path only, fixed buffers)
+//   OP_GET_PROPERTY                 emit_op_get_property           no (pure table lookup)
+//   OP_TRY_CALL                     emit_op_try_call               yes -- wraps an arbitrary call
+//                                                                    (vm_try_call())
+//   OP_RETURN                       emit_op_return                 no (vm_close_upvalues_from() only)
+//   anything else                   (default case)                 aborts compilation; interpreted only
 
 // Up to 3 numeric locals cached in registers for a compiled function's
 // whole lifetime: r15 (callee-saved, survives any call for free. see
@@ -194,11 +245,11 @@ static void emit_compute_falsey(jit_asm_t *a, jit_reg_t result_reg);
 static void emit_op_not(jit_asm_t *a);
 static void emit_op_negate(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
 static void emit_op_bit_not(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
-static void emit_call_binary_slow_path(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, uint8_t opcode, bool bitwise, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
-static void emit_op_arith_or_cmp(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
-static void emit_op_div_mod(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
-static void emit_op_bitwise_and_or_xor(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
-static void emit_op_shift(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
+static void emit_call_binary_slow_path(jit_asm_t *a, const chunk_t *chunk, size_t offset, size_t next_offset, uint8_t opcode, bool bitwise, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
+static void emit_op_arith_or_cmp(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
+static void emit_op_div_mod(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
+static void emit_op_bitwise_and_or_xor(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
+static void emit_op_shift(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra);
 static size_t emit_op_jump_if_false(jit_asm_t *a);
 static void emit_op_get_global(jit_asm_t *a, const chunk_t *chunk, table_t *globals, uint16_t const_index, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_table_cache_t *cache);
 static void emit_op_set_global(jit_asm_t *a, const chunk_t *chunk, table_t *globals, uint16_t const_index, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra, jit_table_cache_t *cache);
@@ -488,6 +539,20 @@ static void emit_gc_check(jit_asm_t *a, const jit_reg_alloc_t *ra, size_t offset
 	int i;
 
 	jit_emit_mov_mem_reg(a, JIT_R12, offsetof(vm_t, stack_top), JIT_R14);
+
+	// Reaching this function at all is itself a safepoint, for
+	// PAWELI_GC_SAFEPOINT_CHECK's purposes (gc.c's gc_heap_note_alloc()),
+	// regardless of whether gc_stress/the threshold below actually
+	// trigger a collection this time -- same "always run, unconditional
+	// on the outcome" shape the r14 sync above already uses. A direct
+	// memory write rather than a call to gc_note_safepoint(): cheaper,
+	// and rax/rcx are already this function's own scratch registers, so
+	// this can't clobber anything a caller staged (see emit_call()'s own
+	// comment on why this function must always run before that staging
+	// begins, never after).
+	jit_emit_mov_reg_mem(a, JIT_RAX, JIT_R12, offsetof(vm_t, heap));
+	jit_emit_xor_reg_reg(a, JIT_RCX, JIT_RCX);
+	jit_emit_mov_mem_reg(a, JIT_RAX, offsetof(gc_heap_t, bytes_since_safepoint), JIT_RCX);
 
 	for (i = 0; i < ra->count; i++) {
 		if (ra->type[i] == VAL_OBJ && (ra->decl_end[i] == (size_t)-1 || offset >= ra->decl_end[i]) && offset < ra->dead_at[i]) {
@@ -978,6 +1043,18 @@ static void emit_op_bit_not(jit_asm_t *a, const chunk_t *chunk, size_t next_offs
 	jit_patch_rel32(a, done_site, a->count);
 }
 
+/* The only case in which vm_binary_op()/vm_bitwise_op() can allocate:
+   binary_op()'s OP_ADD branch on two OBJ_STRING operands calls
+   object_new_string_concat() (vm.c's binary_op(), the string-concat
+   branch right after the two operands are popped). bitwise_op() never
+   allocates under any opcode. Keep this in lockstep with that branch
+   in vm.c -- if it ever grows another allocating case, this predicate
+   must grow with it, or emit_call_binary_slow_path's GC safepoint below
+   silently stops covering it again. */
+static bool jit_binary_op_may_allocate(uint8_t opcode, bool bitwise) {
+	return !bitwise && opcode == OP_ADD;
+}
+
 /* Shared slow-path tail for every arithmetic/comparison/bitwise/shift
    opcode's fast-path miss: sync r14 to vm->stack_top (the helper reads
    operands via peek()/pop() against that field, not our cached
@@ -985,12 +1062,28 @@ static void emit_op_bit_not(jit_asm_t *a, const chunk_t *chunk, size_t next_offs
    bitwise_op() can call vm_runtime_error() even though neither
    allocates), call the helper, reload r14, and bail to the shared
    epilogue with al already holding the helper's own false/0 on
-   failure. no extra "mov al,0" needed, it's already correct. */
-static void emit_call_binary_slow_path(jit_asm_t *a, const chunk_t *chunk, size_t next_offset, uint8_t opcode, bool bitwise, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
+   failure. no extra "mov al,0" needed, it's already correct.
+
+   binary_op()'s OP_ADD-on-strings case is the one exception to "neither
+   allocates" (see jit_binary_op_may_allocate() above), so this is also
+   a GC safepoint exactly when that predicate says so -- same shape as
+   emit_gc_check()'s other 6 call sites: check right before the call
+   that might allocate, so mark_roots() sees a consistent stack/frame
+   if a collection actually runs. */
+static void emit_call_binary_slow_path(jit_asm_t *a, const chunk_t *chunk, size_t offset, size_t next_offset, uint8_t opcode, bool bitwise, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
 	uint64_t helper_addr;
 
 	emit_write_frame_ip(a, chunk, next_offset);
 	jit_emit_mov_mem_reg(a, JIT_R12, offsetof(vm_t, stack_top), JIT_R14);
+	// The GC check (when it applies) must run before any of the
+	// argument/callee registers below are loaded: emit_gc_check() uses
+	// rax/rcx/rdx/rdi as its own scratch (and rdi/rax again for its
+	// internal call to gc_collect()), so running it any later would
+	// clobber whatever this function just staged for its own call --
+	// exactly the wild-jump bug this ordering avoids.
+	if (jit_binary_op_may_allocate(opcode, bitwise)) {
+		emit_gc_check(a, ra, offset);
+	}
 	jit_emit_mov_reg_reg(a, JIT_RDI, JIT_R12);
 	jit_emit_mov32_reg_imm32(a, JIT_RSI, opcode);
 	helper_addr = bitwise ? (uint64_t)(uintptr_t)vm_bitwise_op : (uint64_t)(uintptr_t)vm_binary_op;
@@ -1006,7 +1099,7 @@ static void emit_call_binary_slow_path(jit_asm_t *a, const chunk_t *chunk, size_
    slot layout: tag at [r14-2*sizeof(value_t)], payload at
    [r14-2*sizeof(value_t)+8], then r14 -= sizeof(value_t) (two operands
    popped, one result pushed. net -1 slot). */
-static void emit_op_arith_or_cmp(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
+static void emit_op_arith_or_cmp(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
 	size_t int_fail1;
 	size_t int_fail2;
 	size_t float_fail1;
@@ -1159,7 +1252,7 @@ static void emit_op_arith_or_cmp(jit_asm_t *a, const chunk_t *chunk, uint8_t opc
 	slow_offset = a->count;
 	jit_patch_rel32(a, float_fail1, slow_offset);
 	jit_patch_rel32(a, float_fail2, slow_offset);
-	emit_call_binary_slow_path(a, chunk, next_offset, opcode, false, epilogue_fixups, ra);
+	emit_call_binary_slow_path(a, chunk, offset, next_offset, opcode, false, epilogue_fixups, ra);
 
 	jit_patch_rel32(a, done_site, a->count);
 	jit_patch_rel32(a, float_done_site, a->count);
@@ -1174,7 +1267,7 @@ static void emit_op_arith_or_cmp(jit_asm_t *a, const chunk_t *chunk, uint8_t opc
    division by zero produces inf/-inf/NaN, not a trap. DIVSD computes
    exactly what vm_binary_op()'s native C `a / b` on doubles already
    does, so there's nothing to check for. */
-static void emit_op_div_mod(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
+static void emit_op_div_mod(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
 	size_t fail1;
 	size_t fail2;
 	size_t fail_zero;
@@ -1242,7 +1335,7 @@ static void emit_op_div_mod(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, 
 		float_done_site = 0;
 	}
 	jit_patch_rel32(a, fail_zero, slow_offset);
-	emit_call_binary_slow_path(a, chunk, next_offset, opcode, false, epilogue_fixups, ra);
+	emit_call_binary_slow_path(a, chunk, offset, next_offset, opcode, false, epilogue_fixups, ra);
 
 	jit_patch_rel32(a, done_site, a->count);
 	if (opcode == OP_DIVIDE) {
@@ -1250,7 +1343,7 @@ static void emit_op_div_mod(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, 
 	}
 }
 
-static void emit_op_bitwise_and_or_xor(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
+static void emit_op_bitwise_and_or_xor(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
 	size_t fail1;
 	size_t fail2;
 	size_t slow_offset;
@@ -1285,12 +1378,12 @@ static void emit_op_bitwise_and_or_xor(jit_asm_t *a, const chunk_t *chunk, uint8
 	slow_offset = a->count;
 	jit_patch_rel32(a, fail1, slow_offset);
 	jit_patch_rel32(a, fail2, slow_offset);
-	emit_call_binary_slow_path(a, chunk, next_offset, opcode, true, epilogue_fixups, ra);
+	emit_call_binary_slow_path(a, chunk, offset, next_offset, opcode, true, epilogue_fixups, ra);
 
 	jit_patch_rel32(a, done_site, a->count);
 }
 
-static void emit_op_shift(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
+static void emit_op_shift(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, size_t offset, size_t next_offset, fixup_list_t *epilogue_fixups, const jit_reg_alloc_t *ra) {
 	size_t fail1;
 	size_t fail2;
 	size_t fail_range;
@@ -1327,7 +1420,7 @@ static void emit_op_shift(jit_asm_t *a, const chunk_t *chunk, uint8_t opcode, si
 	jit_patch_rel32(a, fail1, slow_offset);
 	jit_patch_rel32(a, fail2, slow_offset);
 	jit_patch_rel32(a, fail_range, slow_offset);
-	emit_call_binary_slow_path(a, chunk, next_offset, opcode, true, epilogue_fixups, ra);
+	emit_call_binary_slow_path(a, chunk, offset, next_offset, opcode, true, epilogue_fixups, ra);
 
 	jit_patch_rel32(a, done_site, a->count);
 }
@@ -1551,6 +1644,10 @@ static void emit_op_call(jit_asm_t *a, const chunk_t *chunk, size_t offset, uint
 	// shape of emit_gc_check() keeps mark_roots() correct (it scans
 	// vm->stack[0..stack_top); callee and args are still in it, above
 	// frame->slots, and r14 is callee-saved so gc_collect preserves it).
+	// Must run here, before callee_disp/miss_tag/etc. start loading rax
+	// for their own purposes below: emit_gc_check() uses rax/rcx/rdx/rdi
+	// as scratch, so running it any later would clobber values this
+	// function is still staging for its own two calls further down.
 	emit_gc_check(a, ra, offset);
 
 	callee_disp = -(int32_t)(arg_count + 1) * (int32_t)sizeof(value_t);
@@ -1700,12 +1797,13 @@ static void emit_op_get_index(jit_asm_t *a, const chunk_t *chunk, size_t offset,
 	// Slow path. unchanged from before this fast path existed.
 	// jit_helper_get_index() can allocate (a single-char string result
 	// from indexing a string), so this is both a GC safepoint
-	// (emit_gc_check()) and an error safepoint (frame->ip write). the
-	// only opcode implemented so far that's genuinely the former. out is
-	// passed as container's own slot address, safe to reuse as the write
-	// target since the helper's by-value copies of *container/*index_value
-	// happen (as normal C argument evaluation) before it can write through
-	// out, and nothing else reads that slot again in between.
+	// (emit_gc_check(), run before any of the call's own arg/rax setup
+	// below so its scratch-register use can't clobber them) and an
+	// error safepoint (frame->ip write). out is passed as container's
+	// own slot address, safe to reuse as the write target since the
+	// helper's by-value copies of *container/*index_value happen (as
+	// normal C argument evaluation) before it can write through out,
+	// and nothing else reads that slot again in between.
 	emit_write_frame_ip(a, chunk, next_offset);
 	emit_gc_check(a, ra, offset);
 
@@ -1873,6 +1971,11 @@ static void emit_op_array(jit_asm_t *a, const chunk_t *chunk, size_t offset, uin
 	int i;
 
 	emit_write_frame_ip(a, chunk, next_offset);
+	// Covers both object_new_array() below and every object_array_push()
+	// call in the loop: must run before any of them starts loading
+	// rdi/rax, since emit_gc_check() uses those as its own scratch (see
+	// its own comment) and running it any later would clobber a
+	// just-staged callee address or argument.
 	emit_gc_check(a, ra, offset);
 
 	jit_emit_mov_reg_mem(a, JIT_RDI, JIT_R12, offsetof(vm_t, heap));
@@ -2351,7 +2454,7 @@ static void select_register_locals(const chunk_t *chunk, jit_reg_alloc_t *out) {
 		opcode = chunk->code[offset];
 
 		// A VAL_OBJ-typed binding pays real, per-occurrence overhead
-		// every time one of these 5 opcodes runs while it's alive
+		// every time one of these opcodes runs while it's alive
 		// (emit_gc_check()'s flush, plus R2a's own caller-saved
 		// push/pop if it lands in r10/r11): unlike a scalar binding,
 		// whose register-caching is free once won, an object binding's
@@ -2366,11 +2469,13 @@ static void select_register_locals(const chunk_t *chunk, jit_reg_alloc_t *out) {
 		// ranking below only ever picks a strictly positive count) even
 		// when a register would otherwise be free. Deliberately not
 		// restricted to opcodes whose safepoint is unconditional at
-		// runtime (OP_GET_INDEX's string-indexing slow path is a 6th
-		// real safepoint this scan can't cheaply predict from the
-		// opcode alone); undercounting there only makes the penalty
-		// slightly conservative, never wrong.
-		if (opcode == OP_CALL || opcode == OP_ARRAY || opcode == OP_STRUCT || opcode == OP_CLOSURE || opcode == OP_TRY_CALL) {
+		// runtime (OP_GET_INDEX's string-indexing slow path, and
+		// OP_ADD's string-concat case via jit_binary_op_may_allocate(),
+		// are two more real safepoints this scan can't cheaply predict
+		// from the opcode alone without a full type analysis);
+		// undercounting there only makes the penalty slightly
+		// conservative, never wrong.
+		if (opcode == OP_CALL || opcode == OP_ARRAY || opcode == OP_STRUCT || opcode == OP_CLOSURE || opcode == OP_TRY_CALL || jit_binary_op_may_allocate(opcode, false)) {
 			for (i = 0; i < chunk->local_slot_count; i++) {
 				if (chunk->local_reg_eligible[i] && chunk->local_reg_types[i] == VAL_OBJ && offset >= chunk->local_reg_decl_end[i] && offset < chunk->local_reg_dead_at[i]) {
 					access_counts[i] -= 8;
@@ -2633,26 +2738,26 @@ bool jit_compile_function(obj_function_t *function) {
 			case OP_SUBTRACT:
 			case OP_MULTIPLY:
 				next_offset = offset + 1;
-				emit_op_arith_or_cmp(&buf, chunk, opcode, next_offset, &epilogue_fixups, &ra);
+				emit_op_arith_or_cmp(&buf, chunk, opcode, offset, next_offset, &epilogue_fixups, &ra);
 				offset += 1;
 				break;
 			case OP_DIVIDE:
 			case OP_MODULO:
 				next_offset = offset + 1;
-				emit_op_div_mod(&buf, chunk, opcode, next_offset, &epilogue_fixups, &ra);
+				emit_op_div_mod(&buf, chunk, opcode, offset, next_offset, &epilogue_fixups, &ra);
 				offset += 1;
 				break;
 			case OP_BIT_AND:
 			case OP_BIT_OR:
 			case OP_BIT_XOR:
 				next_offset = offset + 1;
-				emit_op_bitwise_and_or_xor(&buf, chunk, opcode, next_offset, &epilogue_fixups, &ra);
+				emit_op_bitwise_and_or_xor(&buf, chunk, opcode, offset, next_offset, &epilogue_fixups, &ra);
 				offset += 1;
 				break;
 			case OP_SHIFT_LEFT:
 			case OP_SHIFT_RIGHT:
 				next_offset = offset + 1;
-				emit_op_shift(&buf, chunk, opcode, next_offset, &epilogue_fixups, &ra);
+				emit_op_shift(&buf, chunk, opcode, offset, next_offset, &epilogue_fixups, &ra);
 				offset += 1;
 				break;
 			case OP_NOT:

@@ -1,0 +1,13 @@
+[book]
+title = "Paweli"
+description = "A small, statically-typed, C-like scripting language."
+authors = ["Paweli contributors"]
+src = "src"
+language = "en"
+
+[output.html]
+git-repository-url = "https://github.com/seaslugr/paweli"
+edit-url-template = "https://github.com/seaslugr/paweli/edit/main/book/{path}"
+default-theme = "paweli"
+preferred-dark-theme = "paweli"
+additional-css = ["theme/paweli-highlight.css"]

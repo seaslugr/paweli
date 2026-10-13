@@ -1,0 +1,551 @@
+.TH PAWELI 1 "August 2026" "paweli" "User Commands"
+.SH NAME
+paweli \- run and compile paweli programs
+.SH SYNOPSIS
+.B paweli
+.RI [ option ... ]
+.I file
+.br
+.B paweli
+.B init
+.RI [ name ]
+.br
+.B paweli
+.B run
+.RI [ file.pw ]
+.RI [ option ... ]
+.br
+.B paweli
+.B test
+.RI [ file.pw ]
+.RI [ option ... ]
+.br
+.B paweli
+.B build
+.I file.pw
+.RI [ output.paw ]
+.RI [ option ... ]
+.br
+.B paweli
+.B build
+.I file.pw
+.B \-\-bin
+.I name
+.RI [ option ... ]
+.br
+.B paweli
+.B build
+.RI [ option ... ]
+.br
+.B paweli
+.B \-\-version
+.SH DESCRIPTION
+.B paweli
+is a small, statically-typed, C-like programming language. Programs
+compile to bytecode and run on a stack-based VM with a JIT compiler for
+hot loops and functions. A program is a single
+.I .pw
+file and needs a top-level
+.B main
+function, the same as C; every top-level function is defined first, then
+.B main()
+is called.
+.PP
+.I paweli
+.I file
+runs a program. Given a
+.I .pw
+source file, it parses, compiles, and runs it. Given a
+.I .paw
+file (a compiled bytecode container, detected by its magic bytes
+regardless of extension), it skips straight to running the already\-
+compiled program, with no parsing or compiling step.
+.PP
+.B paweli run
+does the same thing as
+.IR "paweli file" ,
+just as its own subcommand rather than a bare invocation: given
+.IR file.pw ,
+it runs it directly. Given no
+.I file.pw
+argument, it reads
+.B entry
+out of
+.B project.pawproj
+in the current directory instead. See
+.B PROJECTS
+below.
+.PP
+.B paweli test
+is the same as
+.B run
+but always runs every
+.B @test
+\-tagged function instead of
+.BR main() .
+This replaces the old run-time
+.B \-\-run-tests
+flag entirely; there is no flag for this anymore, only this
+subcommand.
+.B build \-\-run-tests
+(a different, build-time flag, unaffected by this) still bakes test
+mode into a compiled artifact; see below.
+.PP
+.B paweli build
+compiles a
+.I .pw
+file (and the
+.B #module
+it depends on, if any) without running it, for distributing a program
+as one file. Two output kinds:
+.IP \(bu 2
+.B .paw
+(default): a compiled bytecode container. The output path is an optional
+second argument and defaults to the input path with its
+.I .pw
+extension replaced by
+.I .paw
+(or with
+.I .paw
+appended if the input does not end in
+.IR .pw ).
+Still needs
+.B paweli
+installed to run
+.RI ( "paweli out.paw" ).
+.IP \(bu 2
+A native executable
+.RB ( \-\-bin\ \c
+.IR name ):
+a single, directly-runnable file; a copy of the currently running
+.B paweli
+binary with the compiled program appended, so it carries its own
+runtime with it. See
+.B "NATIVE EXECUTABLES"
+below.
+.PP
+Called with no
+.I file.pw
+argument at all,
+.B paweli build
+reads a
+.B project.pawproj
+manifest from the current directory instead, and writes its output
+under
+.B build/
+rather than beside the source. See
+.B PROJECTS
+below.
+.SH OPTIONS
+.SS "Initializing a project"
+.B paweli init
+.RI [ name ]
+writes
+.B project.pawproj
+and a starter
+.B main.pw
+into the current directory. See
+.B PROJECTS
+below.
+.SS "Running or testing a program"
+.TP
+.B \-\-dump-ast
+Prints the parsed AST to stdout before compiling. Only meaningful for a
+.I .pw
+file; has no effect (with a warning) on a
+.I .paw
+file or built executable, since there is no source to parse.
+.TP
+.B \-\-dump-bytecode
+Prints disassembled bytecode for every compiled function to stdout,
+before running. Works for a
+.I .pw
+file, a
+.I .paw
+file, and a built executable.
+.TP
+.B \-\-jit-stats
+Prints each function's JIT state (compiled, failed, or not compiled)
+and hotness counter to stdout after the run finishes.
+.PP
+.B paweli test
+runs every
+.B @test
+\-tagged top-level function instead of
+.BR main()
+.RB ( main()
+must still exist, it just is not called), same as
+.B run
+in every other respect. Only meaningful for a
+.I .pw
+file; a
+.I .paw
+file's or built executable's run mode was already fixed at
+.B build
+time.
+.TP
+.B \-\-stack-size\ \c
+.I N
+Sets the VM's value stack size, in slots. Default
+.BR 4096 ,
+minimum
+.BR 16 .
+.TP
+.B \-\-max-frames\ \c
+.I N
+Sets the maximum call-frame depth (how deep function calls can nest,
+including recursion). Default
+.BR 256 ,
+minimum
+.BR 1 .
+.PP
+Both
+.B \-\-dump-ast
+and
+.B \-\-dump-bytecode
+still run the program afterward, unless parsing or compiling failed.
+.B \-\-stack-size ,
+.B \-\-max-frames ,
+.B \-\-dump-bytecode ,
+and
+.B \-\-jit-stats
+work the same way on a built executable, passed directly to it
+.RB ( "./myprogram \-\-stack-size 8192" ).
+.SS "Building a program"
+.TP
+.BI output.paw
+Optional second positional argument: where to write the compiled
+.I .paw
+file. Defaults to the input path with its
+.I .pw
+extension replaced by
+.I .paw .
+Not used with
+.BR \-\-bin ,
+which names its own output.
+.TP
+.B \-\-bin\ \c
+.I name
+Build a native executable named
+.I name
+instead of a
+.I .paw
+file. See
+.B "NATIVE EXECUTABLES"
+below.
+.TP
+.B \-\-strip-source
+Omits the embedded source text from the output. Produces a smaller
+file; a runtime error from the result still prints its
+.RB "[" code "]"
+.I file:line:
+message and call stack, just without the source-line snippet under it.
+Source is embedded by default.
+.TP
+.B \-\-run-tests
+Bakes test mode into the compiled program: running the result runs
+every
+.B @test
+\-tagged function instead of
+.BR main() ,
+the same as
+.B paweli test
+for the equivalent
+.I .pw
+file. This is the one place
+.B \-\-run-tests
+still exists as a flag; the run-time version was replaced entirely by
+the
+.B paweli test
+subcommand (see above), since baking a fixed run mode into a
+.I compiled
+artifact is a genuinely different thing from choosing one for a single
+run.
+.PP
+A build bundles the entry program and its one
+.B #module
+dependency (if any) into a single output; a
+.B #moduledef
+file can never itself have a
+.B #module
+import, so there is never more than one to bundle.
+.PP
+Called with no
+.I file.pw
+argument, this reads
+.B entry
+out of
+.B project.pawproj
+in the current directory instead, and writes under
+.B build/
+rather than beside the source. See
+.B PROJECTS
+below.
+.SS Version
+.TP
+.B \-\-version ", " \-v
+Prints the installed
+.B paweli
+version and exits, without a file argument.
+.SS "No arguments"
+Running
+.B paweli
+with no file and no subcommand prints a help banner instead of an error
+one\-liner: the version, the usage forms from
+.B SYNOPSIS
+above, two example invocations, the run\-time options, and a pointer to
+this manual. Exit status is still
+.BR 1 ,
+same as any other missing\-argument error.
+.SH PROJECTS
+.RS
+.nf
+mkdir myapp && cd myapp
+paweli init
+paweli run
+.fi
+.RE
+.PP
+.B paweli init
+writes
+.B project.pawproj
+and a starter
+.B main.pw
+into the current directory. It refuses to run if
+.B project.pawproj
+is already there, rather than overwrite it;
+.B main.pw
+is only written if it does not already exist. An optional
+.I name
+argument both names the project and creates a new directory of that
+name to scaffold into (tolerating it already existing); without one,
+.B init
+scaffolds directly into the current directory instead, and the name
+defaults to that directory's own name.
+.PP
+.B project.pawproj
+reuses paweli's own lexical syntax rather than a separate format like
+TOML, though it is not itself a paweli program. It looks like this:
+.RS
+.nf
+string name = "myapp";
+string version = "0.1.0";
+string entry = "main.pw";
+.fi
+.RE
+Only
+.RI "string " field " = " "\(dqvalue\(dq;"
+declarations are recognized, in any order, and all three fields above
+.RB ( name ,
+.BR version ,
+and
+.BR entry )
+are required.
+.PP
+There is no dependency list. A project's file set is not declared in
+the manifest at all: it is whatever
+.B entry
+and its
+.B #module
+/
+.B #moduledef
+graph transitively reach, the same as for a single-file program.
+Fetching or versioning someone else's code is not supported yet.
+.PP
+.B paweli run
+and
+.B paweli test
+with no
+.I file.pw
+argument read
+.B entry
+out of
+.B project.pawproj
+in the current directory and run it directly, same as
+.B "paweli run main.pw"
+(or
+.BR "paweli test main.pw" )
+would. Neither writes any output file.
+.PP
+.B paweli build
+with no
+.I file.pw
+argument reads
+.B entry
+out of
+.B project.pawproj
+in the current directory and compiles it, same as
+.B "paweli build main.pw"
+would. The only difference is where the output goes:
+.B build/<name>.paw
+(or
+.B build/<name>
+for
+.BR \-\-bin )
+instead of beside the source.
+.B build/
+is created automatically.
+.SH "NATIVE EXECUTABLES"
+.RS
+.nf
+paweli build hello.pw \-\-bin hello
+./hello
+.fi
+.RE
+.PP
+.B \-\-bin
+produces a self-contained, directly-runnable file: a copy of the
+.B paweli
+binary that ran the
+.B build
+command, with the compiled program appended after it, followed by a
+small trailer recording where that program starts. On startup, every
+.B paweli
+invocation checks its own executable file for that trailer before doing
+anything else; an ordinary
+.B paweli
+binary (nothing appended) never matches, so this adds no visible
+behavior to normal use.
+.PP
+This means the executable still carries the whole paweli runtime (VM,
+garbage collector) inside it, not just the compiled program. It is not
+an ahead-of-time-compiled native binary the way a C or Rust program is,
+and its size and startup cost reflect that (from a few hundred KB to a
+few MB, depending on which
+.B paweli
+build produced it, plus whatever the compiled program itself adds).
+.PP
+Which
+.B paweli
+binary you run
+.B build \-\-bin
+from matters: a Debug build (AddressSanitizer, optimizer off, unstripped
+symbols) makes a correspondingly large, slow executable; a Release build
+makes a small, fast one. There is no cross-compilation, and a binary
+only runs on the same OS and architecture that built it.
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+Set to any non-empty value to disable colored diagnostic output. Color
+is otherwise on automatically when stderr is a terminal.
+.TP
+.B PAWELI_GC_STRESS
+Set to any non-empty value to run a full garbage-collection cycle before
+every single instruction, instead of only when the heap grows past its
+threshold. Much slower; meant for shaking out GC correctness bugs.
+.TP
+.B PAWELI_GC_DEBUG
+Set to any non-empty value to print each collection's byte counts
+(before, after, and the threshold that triggered it) to stderr.
+.SH "EXIT STATUS"
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Parsing, compiling, or running failed, or the command line was used
+incorrectly.
+.SH DIAGNOSTICS
+Every diagnostic, from the lexer, parser, compiler, or VM, is reported
+in one shared format:
+.PP
+.RS
+.nf
+[code] file:line:col: error: message
+.fi
+.RE
+.PP
+.I code
+is a stable, namespaced slug
+.RB ( "parser::expected-token" ,
+.BR "compiler::duplicate-local" ,
+.BR "vm::division-by-zero" ,
+\&...) that identifies the kind of error independent of the message
+text. The stage prefix
+.RB ( "lexer::" ,
+.BR "parser::" ,
+.BR "compiler::" ,
+.BR "vm::" )
+tells you which stage raised it. Most diagnostics are
+.BR error ,
+which stop the program; a few are
+.BR warning ,
+which print the same way but never stop compilation.
+.PP
+Runtime errors print the failing message with its own
+.RB "[" code "]"
+.I file:line:
+.BR "error:"\  message
+header, then a call-stack trace from the point of failure outward:
+.PP
+.RS
+.nf
+[vm::undefined-variable] example.pw:10: error: undefined variable
+example.pw:10: in main()
+example.pw:1: in <script>
+.fi
+.RE
+.PP
+.B <script>
+is the synthetic top-level frame that defines every function and calls
+.BR main() .
+.PP
+Two stack-related errors are distinct:
+.IP \(bu 2
+.B vm::stack-overflow
+.RI ( "stack overflow" ):
+the value stack exceeded
+.BR \-\-stack-size .
+.IP \(bu 2
+.B vm::call-stack-overflow
+.RI ( "call stack overflow" ):
+call nesting exceeded
+.BR \-\-max-frames ,
+usually from unbounded recursion.
+.SH EXAMPLES
+Run a program from source:
+.RS
+.nf
+paweli hello.pw
+.fi
+.RE
+.PP
+Compile a program to a bytecode file:
+.RS
+.nf
+paweli build hello.pw hello.paw
+paweli hello.paw
+.fi
+.RE
+.PP
+Compile a program to a native executable:
+.RS
+.nf
+paweli build hello.pw \-\-bin hello
+./hello
+.fi
+.RE
+.SH LIMITATIONS
+.B paweli
+runs on Linux only. Windows and macOS support is planned.
+.SH FILES
+.TP
+.I file.pw
+Paweli source file.
+.TP
+.I file.paw
+Compiled bytecode container, run with
+.RB "paweli file.paw" .
+.SH "SEE ALSO"
+.BR paweli-syntax (7)
+.PP
+.B paweli
+itself is licensed under GPLv3. Programs written in paweli are not; the
+runtime exception (see
+.I RUNTIME-EXCEPTION
+in the source tree) covers
+.I .paw
+files and
+.B \-\-bin
+executables, so closed-source paweli programs are fine to write and
+distribute.

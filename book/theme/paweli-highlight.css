@@ -1,0 +1,81 @@
+/*
+ * Paweli syntax theme for mdBook.
+ * Pastel-green accent on a deep green-black ground, matching the
+ * "Paweli" chrome theme in css/variables.css. Structured after
+ * highlight.js's Tomorrow Night theme. Scoped to html.paweli since
+ * mdBook loads this unconditionally via additional-css, regardless
+ * of which theme is active.
+ */
+
+html.paweli .hljs-comment,
+html.paweli .hljs-quote {
+  color: #5f8a6f;
+  font-style: italic;
+}
+
+html.paweli .hljs-variable,
+html.paweli .hljs-template-variable,
+html.paweli .hljs-tag,
+html.paweli .hljs-name,
+html.paweli .hljs-selector-id,
+html.paweli .hljs-selector-class,
+html.paweli .hljs-regexp,
+html.paweli .hljs-deletion {
+  color: #e0a8a8;
+}
+
+html.paweli .hljs-number,
+html.paweli .hljs-built_in,
+html.paweli .hljs-builtin-name,
+html.paweli .hljs-literal,
+html.paweli .hljs-type,
+html.paweli .hljs-params,
+html.paweli .hljs-meta,
+html.paweli .hljs-link {
+  color: #e0c168;
+}
+
+html.paweli .hljs-attribute {
+  color: #cbe0a8;
+}
+
+html.paweli .hljs-string,
+html.paweli .hljs-symbol,
+html.paweli .hljs-bullet,
+html.paweli .hljs-addition {
+  color: #a9e3ba;
+}
+
+html.paweli .hljs-title,
+html.paweli .hljs-section {
+  color: #8fd9a3;
+}
+
+html.paweli .hljs-keyword,
+html.paweli .hljs-selector-tag {
+  color: #a8c9ea;
+}
+
+html.paweli pre code.hljs {
+  display: block;
+  overflow-x: auto;
+  background: hsl(118, 18%, 11%);
+  color: #d3e8d9;
+  padding: 0.5em;
+}
+
+/* Inline `code` spans keep their own display/padding/radius from
+   :not(pre) > .hljs in css/chrome.css (only background is set here,
+   so that rule's `display: inline` isn't overridden). */
+html.paweli :not(pre) > .hljs {
+  background: hsl(118, 18%, 11%);
+  border-radius: 3px;
+}
+
+html.paweli .hljs-emphasis {
+  font-style: italic;
+}
+
+html.paweli .hljs-strong {
+  font-weight: bold;
+}

@@ -249,6 +249,11 @@ static bool binary_op(vm_t *vm, uint8_t op) {
 	b = pop(vm);
 	a = pop(vm);
 
+	if (op == OP_ADD && value_is_obj(a) && value_as_obj(a)->type == OBJ_STRING && value_is_obj(b) && value_as_obj(b)->type == OBJ_STRING) {
+		push(vm, value_obj((obj_t *)object_new_string_concat(vm->heap, vm->strings, (obj_string_t *)value_as_obj(a), (obj_string_t *)value_as_obj(b))));
+		return true;
+	}
+
 	if (!value_is_int(a) && !value_is_float(a)) {
 		vm_runtime_error(vm, "vm::non-numeric-operand", "left operand must be a number");
 		return false;
@@ -398,6 +403,7 @@ static vm_result_t run(vm_t *vm, int stop_frame_count, value_t *out_result) {
 			return VM_RUNTIME_ERROR;
 		}
 
+		gc_note_safepoint(vm->heap);
 		if (vm->gc_stress || vm->heap->bytes_allocated > vm->heap->next_gc) {
 			gc_collect(vm);
 		}

@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,21 +19,48 @@
 #include "runtime/table.h"
 #include "runtime/vm.h"
 
-static bool parse_long_flag_value(int argc, char **argv, int *i, const char *flag_name, long min_value, long *out_value);
+// Long-option codes for the two getopt_long() tables below. Values
+// start past the ASCII range so they never collide with a short
+// option (neither table below defines any, but getopt_long still
+// wants distinct case labels).
+typedef enum {
+	OPT_DUMP_AST = 1000,
+	OPT_DUMP_BYTECODE,
+	OPT_JIT_STATS,
+	OPT_RUN_TESTS,
+	OPT_STACK_SIZE,
+	OPT_MAX_FRAMES,
+	OPT_BIN,
+	OPT_STRIP_SOURCE,
+} cli_long_opt_t;
+
+// Shared by cli_run_command() and cli_run_embedded_command(): both
+// accept the same run-time flags, they just react to --dump-ast and
+// --run-tests differently (see each function).
+static const struct option run_long_opts[] = {
+	{"dump-ast", no_argument, NULL, OPT_DUMP_AST},
+	{"dump-bytecode", no_argument, NULL, OPT_DUMP_BYTECODE},
+	{"jit-stats", no_argument, NULL, OPT_JIT_STATS},
+	{"run-tests", no_argument, NULL, OPT_RUN_TESTS},
+	{"stack-size", required_argument, NULL, OPT_STACK_SIZE},
+	{"max-frames", required_argument, NULL, OPT_MAX_FRAMES},
+	{0, 0, 0, 0},
+};
+
+static const struct option build_long_opts[] = {
+	{"bin", required_argument, NULL, OPT_BIN},
+	{"strip-source", no_argument, NULL, OPT_STRIP_SOURCE},
+	{"run-tests", no_argument, NULL, OPT_RUN_TESTS},
+	{0, 0, 0, 0},
+};
+
+static bool parse_long_flag_value(const char *flag_name, const char *text, long min_value, long *out_value);
 static char *default_paw_output_path(const char *input_path);
 static bool ensure_project_build_dir(void);
 static char *project_build_output_path(const char *name, const char *suffix);
 
-static bool parse_long_flag_value(int argc, char **argv, int *i, const char *flag_name, long min_value, long *out_value) {
-	long value;
-
-	if (*i + 1 >= argc) {
-		print_error("%s requires a value", flag_name);
-		return false;
-	}
-
-	(*i)++;
-	value = strtol(argv[*i], NULL, 10);
+static bool parse_long_flag_value(const char *flag_name, const char *text, long min_value, long *out_value) {
+	long value = strtol(text, NULL, 10);
 
 	if (value < min_value) {
 		print_error("%s must be at least %ld", flag_name, min_value);
@@ -95,38 +123,45 @@ static char *project_build_output_path(const char *name, const char *suffix) {
    else non-flag is a hard error, since there is no positional
    argument this command line could sensibly mean. */
 int cli_run_embedded_command(const char *exe_path, uint64_t offset, uint64_t size, int argc, char **argv) {
-	bool dump_bytecode;
-	bool jit_stats;
-	long stack_size;
-	long max_frames;
-	int i;
+	bool dump_bytecode = false;
+	bool jit_stats = false;
+	long stack_size = VM_DEFAULT_STACK_SIZE;
+	long max_frames = VM_DEFAULT_MAX_FRAMES;
+	int opt;
 
-	dump_bytecode = false;
-	jit_stats = false;
-	stack_size = VM_DEFAULT_STACK_SIZE;
-	max_frames = VM_DEFAULT_MAX_FRAMES;
-
-	for (i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "--dump-ast") == 0) {
+	optind = 1;
+	while ((opt = getopt_long(argc, argv, "", run_long_opts, NULL)) != -1) {
+		switch (opt) {
+		case OPT_DUMP_AST:
 			print_warning("--dump-ast has no effect on this program (there is no source to parse)");
-		} else if (strcmp(argv[i], "--dump-bytecode") == 0) {
+			break;
+		case OPT_DUMP_BYTECODE:
 			dump_bytecode = true;
-		} else if (strcmp(argv[i], "--jit-stats") == 0) {
+			break;
+		case OPT_JIT_STATS:
 			jit_stats = true;
-		} else if (strcmp(argv[i], "--run-tests") == 0) {
+			break;
+		case OPT_RUN_TESTS:
 			print_warning("--run-tests has no effect on this program (its run mode was fixed when it was built)");
-		} else if (strcmp(argv[i], "--stack-size") == 0) {
-			if (!parse_long_flag_value(argc, argv, &i, "--stack-size", VM_MIN_STACK_SIZE, &stack_size)) {
+			break;
+		case OPT_STACK_SIZE:
+			if (!parse_long_flag_value("--stack-size", optarg, VM_MIN_STACK_SIZE, &stack_size)) {
 				return 1;
 			}
-		} else if (strcmp(argv[i], "--max-frames") == 0) {
-			if (!parse_long_flag_value(argc, argv, &i, "--max-frames", 1, &max_frames)) {
+			break;
+		case OPT_MAX_FRAMES:
+			if (!parse_long_flag_value("--max-frames", optarg, 1, &max_frames)) {
 				return 1;
 			}
-		} else {
-			print_error("unexpected argument '%s'", argv[i]);
+			break;
+		default:
 			return 1;
 		}
+	}
+
+	if (optind < argc) {
+		print_error("unexpected argument '%s'", argv[optind]);
+		return 1;
 	}
 
 	return exec_run_embedded(exe_path, offset, size, dump_bytecode, jit_stats, stack_size, max_frames);
@@ -144,49 +179,55 @@ int cli_run_embedded_command(const char *exe_path, uint64_t offset, uint64_t siz
    test mode into a *compiled* artifact is a different, still-needed
    capability and stays exactly as `paweli build --run-tests` today). */
 int cli_run_command(int argc, char **argv, bool allow_project_fallback, bool force_run_tests) {
-	bool dump_ast;
-	bool dump_bytecode;
-	bool jit_stats;
-	bool run_tests;
-	const char *path;
+	bool dump_ast = false;
+	bool dump_bytecode = false;
+	bool jit_stats = false;
+	bool run_tests = force_run_tests;
+	const char *path = NULL;
 	int i;
-	long stack_size;
-	long max_frames;
+	long stack_size = VM_DEFAULT_STACK_SIZE;
+	long max_frames = VM_DEFAULT_MAX_FRAMES;
 	char *source;
-	bool from_manifest;
+	bool from_manifest = false;
 	project_manifest_t manifest;
 	int result;
+	int opt;
 
-	dump_ast = false;
-	dump_bytecode = false;
-	jit_stats = false;
-	run_tests = force_run_tests;
-	path = NULL;
-	stack_size = VM_DEFAULT_STACK_SIZE;
-	max_frames = VM_DEFAULT_MAX_FRAMES;
-	from_manifest = false;
-
-	for (i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "--dump-ast") == 0) {
+	optind = 1;
+	while ((opt = getopt_long(argc, argv, "", run_long_opts, NULL)) != -1) {
+		switch (opt) {
+		case OPT_DUMP_AST:
 			dump_ast = true;
-		} else if (strcmp(argv[i], "--dump-bytecode") == 0) {
+			break;
+		case OPT_DUMP_BYTECODE:
 			dump_bytecode = true;
-		} else if (strcmp(argv[i], "--jit-stats") == 0) {
+			break;
+		case OPT_JIT_STATS:
 			jit_stats = true;
-		} else if (strcmp(argv[i], "--run-tests") == 0) {
+			break;
+		case OPT_RUN_TESTS:
 			print_error("--run-tests was replaced by the 'paweli test' subcommand");
 			return 1;
-		} else if (strcmp(argv[i], "--stack-size") == 0) {
-			if (!parse_long_flag_value(argc, argv, &i, "--stack-size", VM_MIN_STACK_SIZE, &stack_size)) {
+		case OPT_STACK_SIZE:
+			if (!parse_long_flag_value("--stack-size", optarg, VM_MIN_STACK_SIZE, &stack_size)) {
 				return 1;
 			}
-		} else if (strcmp(argv[i], "--max-frames") == 0) {
-			if (!parse_long_flag_value(argc, argv, &i, "--max-frames", 1, &max_frames)) {
+			break;
+		case OPT_MAX_FRAMES:
+			if (!parse_long_flag_value("--max-frames", optarg, 1, &max_frames)) {
 				return 1;
 			}
-		} else {
-			path = argv[i];
+			break;
+		default:
+			return 1;
 		}
+	}
+
+	// Same last-one-wins behavior a strcmp loop taking `path = argv[i]`
+	// on every non-flag argument had: `paweli run a.pw b.pw` silently
+	// runs b.pw. Not this refactor's problem to fix.
+	for (i = optind; i < argc; i++) {
+		path = argv[i];
 	}
 
 	if (path == NULL) {
@@ -278,20 +319,28 @@ int cli_build_command(int argc, char **argv) {
 	positional[1] = NULL;
 	from_manifest = false;
 
-	for (i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "--bin") == 0) {
-			if (i + 1 >= argc) {
-				print_error("--bin requires a value");
+	{
+		int opt;
+
+		optind = 1;
+		while ((opt = getopt_long(argc, argv, "", build_long_opts, NULL)) != -1) {
+			switch (opt) {
+			case OPT_BIN:
+				want_exe = true;
+				output_path = optarg;
+				break;
+			case OPT_STRIP_SOURCE:
+				strip_source = true;
+				break;
+			case OPT_RUN_TESTS:
+				run_tests = true;
+				break;
+			default:
 				return 1;
 			}
-			i++;
-			want_exe = true;
-			output_path = argv[i];
-		} else if (strcmp(argv[i], "--strip-source") == 0) {
-			strip_source = true;
-		} else if (strcmp(argv[i], "--run-tests") == 0) {
-			run_tests = true;
-		} else {
+		}
+
+		for (i = optind; i < argc; i++) {
 			if (positional_count >= 2) {
 				print_error("unexpected argument '%s'", argv[i]);
 				return 1;

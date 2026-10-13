@@ -11,6 +11,14 @@ if [ ! -x "${PAWELI}" ]; then
 	exit 1
 fi
 
+# Debug tripwire: aborts if any allocation reachable from JIT-generated
+# code runs for too long without hitting a GC safepoint (gc.c's
+# gc_heap_note_alloc()). Exported for every invocation below so a
+# regression of this specific bug class (an allocating call reachable
+# from the JIT with no paired emit_gc_check()) fails the suite loudly
+# instead of only showing up later as unbounded memory growth.
+export PAWELI_GC_SAFEPOINT_CHECK=1
+
 pass=0
 fail=0
 

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "object.h"
+#include "runtime/gc.h"
 #include "table.h"
 
 static uint32_t hash_string(const char *chars, size_t length);
@@ -42,7 +43,7 @@ obj_string_t *object_new_string(gc_heap_t *heap, table_t *strings, const char *c
 	string->chars[length] = '\0';
 	string->hash = hash;
 
-	heap->bytes_allocated += sizeof(obj_string_t) + length + 1;
+	gc_heap_note_alloc(heap, sizeof(obj_string_t) + length + 1);
 
 	table_set(strings, string, value_null());
 
@@ -94,6 +95,20 @@ obj_string_t *object_new_string_from_literal(gc_heap_t *heap, table_t *strings, 
 	return string;
 }
 
+obj_string_t *object_new_string_concat(gc_heap_t *heap, table_t *strings, obj_string_t *a, obj_string_t *b) {
+	char *buffer;
+	obj_string_t *string;
+
+	buffer = malloc(a->length + b->length + 1);
+	memcpy(buffer, a->chars, a->length);
+	memcpy(buffer + a->length, b->chars, b->length);
+	buffer[a->length + b->length] = '\0';
+
+	string = object_new_string(heap, strings, buffer, a->length + b->length);
+	free(buffer);
+	return string;
+}
+
 obj_function_t *object_new_function(gc_heap_t *heap) {
 	obj_function_t *function;
 
@@ -116,7 +131,7 @@ obj_function_t *object_new_function(gc_heap_t *heap) {
 	function->source = NULL;
 	chunk_init(&function->chunk);
 
-	heap->bytes_allocated += sizeof(obj_function_t);
+	gc_heap_note_alloc(heap, sizeof(obj_function_t));
 
 	return function;
 }
@@ -133,7 +148,7 @@ obj_native_t *object_new_native(gc_heap_t *heap, native_fn_t function, const cha
 	native->function = function;
 	native->name = name;
 
-	heap->bytes_allocated += sizeof(obj_native_t);
+	gc_heap_note_alloc(heap, sizeof(obj_native_t));
 
 	return native;
 }
@@ -151,7 +166,7 @@ obj_module_t *object_new_module(gc_heap_t *heap, obj_string_t *name) {
 	module->members = malloc(sizeof(table_t));
 	table_init(module->members);
 
-	heap->bytes_allocated += sizeof(obj_module_t) + sizeof(table_t);
+	gc_heap_note_alloc(heap, sizeof(obj_module_t) + sizeof(table_t));
 
 	return module;
 }
@@ -169,7 +184,7 @@ obj_array_t *object_new_array(gc_heap_t *heap) {
 	array->count = 0;
 	array->capacity = 0;
 
-	heap->bytes_allocated += sizeof(obj_array_t);
+	gc_heap_note_alloc(heap, sizeof(obj_array_t));
 
 	return array;
 }
@@ -187,7 +202,7 @@ obj_struct_t *object_new_struct(gc_heap_t *heap, obj_string_t *type_name, size_t
 	instance->fields = field_count > 0 ? malloc(field_count * sizeof(value_t)) : NULL;
 	instance->field_count = field_count;
 
-	heap->bytes_allocated += sizeof(obj_struct_t) + field_count * sizeof(value_t);
+	gc_heap_note_alloc(heap, sizeof(obj_struct_t) + field_count * sizeof(value_t));
 
 	return instance;
 }
@@ -208,7 +223,7 @@ obj_closure_t *object_new_closure(gc_heap_t *heap, obj_function_t *function, int
 	closure->upvalues = upvalues;
 	closure->upvalue_count = upvalue_count;
 
-	heap->bytes_allocated += sizeof(obj_closure_t) + (size_t)upvalue_count * sizeof(obj_upvalue_t *);
+	gc_heap_note_alloc(heap, sizeof(obj_closure_t) + (size_t)upvalue_count * sizeof(obj_upvalue_t *));
 
 	return closure;
 }
@@ -226,7 +241,7 @@ obj_upvalue_t *object_new_upvalue(gc_heap_t *heap, value_t *location) {
 	upvalue->closed = value_null();
 	upvalue->next = NULL;
 
-	heap->bytes_allocated += sizeof(obj_upvalue_t);
+	gc_heap_note_alloc(heap, sizeof(obj_upvalue_t));
 
 	return upvalue;
 }
@@ -238,7 +253,7 @@ void object_array_push(gc_heap_t *heap, obj_array_t *array, value_t value) {
 		old_capacity = array->capacity;
 		array->capacity = old_capacity < 8 ? 8 : old_capacity * 2;
 		array->values = realloc(array->values, array->capacity * sizeof(value_t));
-		heap->bytes_allocated += (array->capacity - old_capacity) * sizeof(value_t);
+		gc_heap_note_alloc(heap, (array->capacity - old_capacity) * sizeof(value_t));
 	}
 
 	array->values[array->count++] = value;

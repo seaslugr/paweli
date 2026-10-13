@@ -9,41 +9,62 @@
 #include "compiler/paw.h"
 #include "platform/exe.h"
 
+static int run_subcommand(int argc, char **argv) {
+	return cli_run_command(argc, argv, true, false);
+}
+
+static int test_subcommand(int argc, char **argv) {
+	return cli_run_command(argc, argv, true, true);
+}
+
+static int version_subcommand(int argc, char **argv) {
+	(void)argc;
+	(void)argv;
+	print_version();
+	return 0;
+}
+
+typedef struct {
+	const char *names[2];
+	int (*handler)(int argc, char **argv);
+} subcommand_t;
+
+static const subcommand_t subcommands[] = {
+	{{"build", NULL}, cli_build_command},
+	{{"init", NULL}, cli_init_command},
+	{{"run", NULL}, run_subcommand},
+	{{"test", NULL}, test_subcommand},
+	{{"version", "-v"}, version_subcommand},
+};
+
+static const subcommand_t *find_subcommand(const char *name) {
+	size_t i;
+
+	for (i = 0; i < sizeof(subcommands) / sizeof(subcommands[0]); i++) {
+		if (strcmp(name, subcommands[i].names[0]) == 0) {
+			return &subcommands[i];
+		}
+		if (subcommands[i].names[1] != NULL && strcmp(name, subcommands[i].names[1]) == 0) {
+			return &subcommands[i];
+		}
+	}
+	return NULL;
+}
+
 int main(int argc, char **argv) {
 	char *self_exe_path;
 	uint64_t payload_offset;
 	uint64_t payload_size;
 	int exit_code;
+	const subcommand_t *subcommand;
 
-	if (argc >= 2 && strcmp(argv[1], "build") == 0) {
-		return cli_build_command(argc - 1, argv + 1);
+	if (argc >= 2) {
+		subcommand = find_subcommand(argv[1]);
+		if (subcommand != NULL) {
+			return subcommand->handler(argc - 1, argv + 1);
+		}
 	}
 
-	if (argc >= 2 && strcmp(argv[1], "init") == 0) {
-		return cli_init_command(argc - 1, argv + 1);
-	}
-
-	if (argc >= 2 && strcmp(argv[1], "run") == 0) {
-		return cli_run_command(argc - 1, argv + 1, true, false);
-	}
-
-	if (argc >= 2 && strcmp(argv[1], "test") == 0) {
-		return cli_run_command(argc - 1, argv + 1, true, true);
-	}
-
-	if (argc >= 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
-		print_version();
-		return 0;
-	}
-
-	// Every plain invocation checks whether its own executable file has
-	// a payload appended (see paw_is_self_extracting()) before falling
-	// back to treating argv[1] as a .pw/.paw path. This is a few cheap
-	// syscalls, and the only way a self-extracting binary built by
-	// `paweli build --bin` can tell it's supposed to run its own
-	// embedded program instead of expecting a file argument. An
-	// ordinary paweli binary (nothing appended) always falls through
-	// here: its own trailer check simply never matches.
 	self_exe_path = platform_self_exe_path();
 	if (self_exe_path != NULL && paw_is_self_extracting(self_exe_path, &payload_offset, &payload_size)) {
 		exit_code = cli_run_embedded_command(self_exe_path, payload_offset, payload_size, argc, argv);

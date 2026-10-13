@@ -1,7 +1,8 @@
-# Paweli
-Paweli is a small, statically-typed, C-like programming language. The language runs on a stack-based VM and a custom JIT compiler.
+# Paweli Language
 
-The name comes from the sea slug *Costasiella paweli*.
+**Paweli** is a statically-typed, C-like programming language that runs on a stack-based VM and a custom JIT compiler.
+
+The name **Paweli** comes from the sea slug [`Costasiella paweli`](https://en.seaslug.world/species/costasiella_paweli).
 
 ```paweli
 fn main() {
@@ -10,6 +11,7 @@ fn main() {
 ```
 
 ## Features
+
 - Statically typed
 - Structs with struct-scoped functions
 - First-class functions, closures, and lambdas
@@ -19,7 +21,7 @@ fn main() {
 - Decorators (`@test`, `@deprecated`)
 - A mark-sweep garbage collector
 - A JIT compiler for hot loops and functions
-- Debug flags: `--dump-ast`, `--dump-bytecode`, `--run-tests`
+- Debug/Config flags: `--dump-ast`, `--dump-bytecode`, `--jit-stats`
 
 ## Performance
 
@@ -32,16 +34,23 @@ Run a program from source:
 paweli hello.pw
 ```
 
-Compile a program to a bytecode file:
+Scaffold and run a project (see [`projects.md`](book/src/cli/projects.md)):
+```bash
+paweli init myproject
+cd myproject
+paweli run
+```
+
+Compile a program to a packaged bytecode file:
 ```bash
 paweli build hello.pw hello.paw
-paweli hello.paw
+paweli hello.paw # this requires the Paweli runtime to be installed
 ```
 
 Compile a program to a native executable:
 ```bash
 paweli build hello.pw --bin hello
-./hello
+./hello # doesnt require Paweli to run!
 ```
 
 Example program:
@@ -71,32 +80,30 @@ fn main() {
 }
 ```
 
-See [`docs/paweli/`](docs/paweli/) for full documentation.
+See [`book/src/`](book/src/) for full documentation, or run `mdbook serve book` to browse it locally.
 
 ## Build From Source
 Requirements: a C11 compiler, CMake, Ninja.
 
 Debug build:
 ```bash
-git clone https://github.com/Foox-dev/paweli
+git clone https://github.com/seaslugr/paweli
 cd paweli
-make
+make # Debug/dev release. Placed in 'build/debug/'
 ```
-The binary is at `build/debug/paweli`.
 
 Release build:
 ```bash
-make release
+make release # Placed in 'build/release/'
 ```
-The binary is at `build/release/paweli`.
 
-Run the tests:
+Run the test suite:
 ```bash
 make test
 ```
 
 ## Platform Support
-Paweli runs on Linux only. Windows and macOS support is planned.
+Paweli currently supports Linux only. Windows and macOS support is planned in the future.
 
 ## License
 Paweli itself is licensed under [GPLv3](LICENSE).

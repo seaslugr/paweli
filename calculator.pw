@@ -1,8 +1,8 @@
 /// calculator.pw
-An interactive integer calculator: reads expressions from stdin,
-evaluates them with proper operator precedence, and prints the result.
-Exit with a blank line, q, or quit.
-Supported: + - * / %, parentheses, unary minus, and whitespace.
+	An interactive integer calculator: reads expressions from stdin,
+	evaluates them with proper operator precedence, and prints the result.
+	Exit with a blank line, q, or quit.
+	Supported: + - * / %, parentheses, unary minus, and whitespace.
 ///
 
 fn main() {

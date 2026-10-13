@@ -37,6 +37,14 @@ typedef struct {
 	obj_t *objects;
 	size_t bytes_allocated;
 	size_t next_gc;
+	// PAWELI_GC_SAFEPOINT_CHECK support (gc.c's gc_heap_note_alloc()):
+	// bytes allocated since the last time any safepoint was reached,
+	// regardless of whether it actually triggered a collection. Reset
+	// unconditionally at every safepoint (vm.c's run() loop, and
+	// src/jit/jit_compile.c's emit_gc_check(), emitted directly into
+	// JIT'd code). Stays 0 forever if the check is disabled.
+	size_t bytes_since_safepoint;
+	bool safepoint_check_enabled;
 } gc_heap_t;
 
 typedef struct {
@@ -212,6 +220,11 @@ obj_string_t *object_new_string(gc_heap_t *heap, table_t *strings, const char *c
    in raw first. raw must not include the surrounding quotes. This is
    where the lexer's deferred escape decoding actually happens. */
 obj_string_t *object_new_string_from_literal(gc_heap_t *heap, table_t *strings, const char *raw, size_t raw_length);
+
+/* Concatenates a and b into a freshly interned string. Shared by `+` on
+   two strings (src/runtime/vm.c's binary_op()) and stdlib.concat
+   (src/stdlib/string.c). */
+obj_string_t *object_new_string_concat(gc_heap_t *heap, table_t *strings, obj_string_t *a, obj_string_t *b);
 
 obj_function_t *object_new_function(gc_heap_t *heap);
 obj_native_t *object_new_native(gc_heap_t *heap, native_fn_t function, const char *name);

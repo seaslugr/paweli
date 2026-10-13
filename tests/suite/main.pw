@@ -45,8 +45,10 @@
 @test fn test_arrays_foreach_nested_array() { arrays.test_foreach_nested_array(); }
 
 @test fn test_strings_split() { strings.test_split(); }
+@test fn test_strings_concatenation() { strings.test_concatenation(); }
 @test fn test_strings_indexing() { strings.test_indexing(); }
 @test fn test_strings_foreach_characters() { strings.test_foreach_characters(); }
+@test fn test_strings_jit_concat_loop() { strings.test_jit_string_concat_loop(); }
 
 @test fn test_control_flow_if_else() { control_flow.test_if_else(); }
 @test fn test_control_flow_for_loop() { control_flow.test_for_loop(); }

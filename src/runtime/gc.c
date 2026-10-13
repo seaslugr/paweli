@@ -193,10 +193,19 @@ static void sweep(gc_heap_t *heap) {
 	}
 }
 
+static bool gc_safepoint_check_enabled(void) {
+	const char *value;
+
+	value = getenv("PAWELI_GC_SAFEPOINT_CHECK");
+	return value != NULL && value[0] != '\0';
+}
+
 void gc_heap_init(gc_heap_t *heap) {
 	heap->objects = NULL;
 	heap->bytes_allocated = 0;
 	heap->next_gc = GC_INITIAL_THRESHOLD;
+	heap->bytes_since_safepoint = 0;
+	heap->safepoint_check_enabled = gc_safepoint_check_enabled();
 }
 
 void gc_collect(vm_t *vm) {
@@ -223,6 +232,34 @@ void gc_collect(vm_t *vm) {
 	vm->heap->next_gc = vm->heap->bytes_allocated * GC_HEAP_GROW_FACTOR;
 	if (vm->heap->next_gc < GC_INITIAL_THRESHOLD) {
 		vm->heap->next_gc = GC_INITIAL_THRESHOLD;
+	}
+}
+
+void gc_note_safepoint(gc_heap_t *heap) {
+	heap->bytes_since_safepoint = 0;
+}
+
+// PAWELI_GC_SAFEPOINT_CHECK is a debug tripwire, not a correctness
+// mechanism: it exists to turn "a JIT call site can allocate but has no
+// paired emit_gc_check(), so this heap grows forever unnoticed" into an
+// immediate, loud failure instead of a silent leak someone eventually
+// notices in production. Plain if/abort rather than assert(), matching
+// this codebase's own convention (see tests/jit/jit_selftest.c's own
+// comment): assert() compiles away under NDEBUG/Release, which would
+// silently turn this into a no-op under exactly the build configuration
+// most likely to run for a while before anyone looks at memory use.
+void gc_heap_note_alloc(gc_heap_t *heap, size_t size) {
+	heap->bytes_allocated += size;
+
+	if (!heap->safepoint_check_enabled) {
+		return;
+	}
+
+	heap->bytes_since_safepoint += size;
+	if (heap->bytes_since_safepoint > GC_SAFEPOINT_STALENESS_LIMIT) {
+		fprintf(stderr, "paweli: PAWELI_GC_SAFEPOINT_CHECK: %zu bytes allocated since the last GC safepoint (limit %d).\n", heap->bytes_since_safepoint, GC_SAFEPOINT_STALENESS_LIMIT);
+		fprintf(stderr, "paweli: a call path reachable from JIT-generated code is allocating with no paired emit_gc_check() -- see gc.h's safepoint invariant.\n");
+		abort();
 	}
 }
 

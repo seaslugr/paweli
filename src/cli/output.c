@@ -54,10 +54,6 @@ void print_success(const char *format, ...) {
 	va_end(args);
 }
 
-/* "paweli 0.1.0 (Debug)": bold+lime name, plain version, dim build type
-   in parens. Colored the same way diagnostic_emit() decides color for
-   stderr (NO_COLOR unset and the stream is a terminal), just checked
-   against stdout instead, since --version prints there. */
 void print_version(void) {
 	bool color;
 	const char *reset;
@@ -74,10 +70,6 @@ void print_version(void) {
 	printf("%s%spaweli%s %s %s(%s)%s\n", bold, lime, reset, PAWELI_VERSION_STRING, dim, PAWELI_BUILD_TYPE, reset);
 }
 
-/* Shown on a bare `paweli` invocation (no file, no subcommand): a
-   git/cargo-style banner instead of a single usage line, since at this
-   point the user has nothing else to go on. Colored the same way
-   diagnostic_emit() decides color for stderr. */
 void print_usage(void) {
 	bool color;
 	const char *reset;
