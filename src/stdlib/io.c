@@ -6,10 +6,9 @@
 
 static bool stdlib_read_line(vm_t *vm, int arg_count, value_t *args, value_t *out_result);
 
-/* Reads until '\n' or EOF, growing buffer as needed. A trailing '\r' is
-   also stripped, so a CRLF-terminated line reads the same as an LF one.
-   EOF with nothing read yields an empty string, not an error: there is
-   no way to distinguish "empty line" from "no more input" otherwise. */
+/* Reads up to '\n' or EOF and grows the buffer as needed. A trailing
+   '\r' is removed, so a CRLF line reads like an LF line. EOF with
+   nothing read gives an empty string. */
 static bool stdlib_read_line(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	char *buffer;
 	size_t capacity;

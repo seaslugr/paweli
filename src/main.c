@@ -1,13 +1,13 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "cli/cli.h"
 #include "cli/output.h"
-#include "compiler/paw.h"
-#include "platform/exe.h"
+#include "paw/paw.h"
+#include "platform/platform.h"
+
+#define SUBCOMMAND_MAX_NAMES 3
 
 static int run_subcommand(int argc, char **argv) {
 	return cli_run_command(argc, argv, true, false);
@@ -25,27 +25,24 @@ static int version_subcommand(int argc, char **argv) {
 }
 
 typedef struct {
-	const char *names[2];
+	const char *names[SUBCOMMAND_MAX_NAMES];
 	int (*handler)(int argc, char **argv);
 } subcommand_t;
 
 static const subcommand_t subcommands[] = {
-	{{"build", NULL}, cli_build_command},
-	{{"init", NULL}, cli_init_command},
-	{{"run", NULL}, run_subcommand},
-	{{"test", NULL}, test_subcommand},
-	{{"version", "-v"}, version_subcommand},
+	{{"build"}, cli_build_command},
+	{{"init"}, cli_init_command},
+	{{"run"}, run_subcommand},
+	{{"test"}, test_subcommand},
+	{{"version", "--version", "-v"}, version_subcommand},
 };
 
 static const subcommand_t *find_subcommand(const char *name) {
-	size_t i;
-
-	for (i = 0; i < sizeof(subcommands) / sizeof(subcommands[0]); i++) {
-		if (strcmp(name, subcommands[i].names[0]) == 0) {
-			return &subcommands[i];
-		}
-		if (subcommands[i].names[1] != NULL && strcmp(name, subcommands[i].names[1]) == 0) {
-			return &subcommands[i];
+	for (size_t i = 0; i < sizeof(subcommands) / sizeof(subcommands[0]); i++) {
+		for (size_t j = 0; j < SUBCOMMAND_MAX_NAMES && subcommands[i].names[j] != NULL; j++) {
+			if (strcmp(name, subcommands[i].names[j]) == 0) {
+				return &subcommands[i];
+			}
 		}
 	}
 	return NULL;

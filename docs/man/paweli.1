@@ -422,7 +422,10 @@ binary you run
 from matters: a Debug build (AddressSanitizer, optimizer off, unstripped
 symbols) makes a correspondingly large, slow executable; a Release build
 makes a small, fast one. There is no cross-compilation, and a binary
-only runs on the same OS and architecture that built it.
+only runs on the same OS and architecture that built it. On Windows the
+output file gets a
+.B .exe
+suffix.
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR
@@ -527,7 +530,7 @@ paweli build hello.pw \-\-bin hello
 .RE
 .SH LIMITATIONS
 .B paweli
-runs on Linux only. Windows and macOS support is planned.
+runs on x86_64 Linux and x86_64 Windows. macOS and ARM support is planned.
 .SH FILES
 .TP
 .I file.pw

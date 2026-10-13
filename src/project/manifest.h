@@ -2,49 +2,39 @@
 
 #include <stdbool.h>
 
-// project.pawproj: the manifest a paweli project keeps in its root
-// directory. paweli init writes one; a bare `paweli build` (no file
-// argument) reads one from the current directory instead of requiring
-// a filename. Looked up by this exact name, cwd-only, no parent-
-// directory search yet.
+// The manifest in a project's root directory. `paweli init` writes
+// one. `paweli build`, `run`, and `test` with no file argument read
+// one from the current directory. Parent directories are not searched.
 #define PROJECT_MANIFEST_FILENAME "project.pawproj"
 
-// Every field is a plain heap-allocated C string, or NULL if the
-// manifest hasn't been successfully read into this struct yet.
+// Each field is a heap-allocated C string, or NULL before a successful
+// read.
 typedef struct {
 	char *name;
 	char *version;
 	char *entry;
 } project_manifest_t;
 
-// True if PROJECT_MANIFEST_FILENAME's file exists at path and could be
-// opened for reading. Doesn't parse it; lets a caller (build_command())
-// tell "no project here" (silent, expected) apart from "a manifest is
-// here but broken" (project_manifest_read() prints a real diagnostic
-// for that case).
+/* True if a manifest exists at path and can be opened. It is not
+   parsed. A caller uses this to tell "no project here" from "broken
+   manifest", which project_manifest_read() reports. */
 bool project_manifest_exists(const char *path);
 
-// Reads and parses path (normally PROJECT_MANIFEST_FILENAME) into
-// *out. The manifest grammar reuses paweli's own lexer: zero or more
-// `string <field> = "<value>";` declarations, in any order, covering
-// exactly the three fields below, each required exactly once. Returns
-// false on a missing/unreadable file, a lexer/grammar error, an
-// unrecognized field name, a field repeated more than once, or a
-// required field never given, with a diagnostic already printed to
-// stderr via diagnostic_emit() in every case except "file could not be
-// opened" (see project_manifest_exists()). *out is left fully NULL'd
-// on failure, safe to pass to project_manifest_free() either way.
+/* Reads and parses path into *out. The manifest uses paweli's lexer.
+   It holds `string <field> = "<value>";` declarations in any order,
+   for exactly the three fields below, each once. Returns false for an
+   unreadable file, a syntax error, an unknown field, a repeated field,
+   or a missing field. A diagnostic is printed in every case except a
+   file that cannot be opened. On failure *out is all NULL and safe to
+   pass to project_manifest_free(). */
 bool project_manifest_read(const char *path, project_manifest_t *out);
 
 void project_manifest_free(project_manifest_t *manifest);
 
-// Scaffolds a new project in dir (normally "."), which must already
-// exist: writes PROJECT_MANIFEST_FILENAME and a starter main.pw there.
-// name becomes the manifest's own name field; NULL derives it from
-// dir's absolute-path basename (via getcwd(), so dir must be "." or
-// otherwise resolve through the current directory; see project_init()'s
-// own comment in manifest.c). Fails (false, error already printed) if
-// a manifest already exists in dir. main.pw is left untouched, not
-// overwritten, if it already exists; everything else about init still
-// happens.
+/* Scaffolds a project in dir, which must exist: writes the manifest
+   and a starter main.pw. name becomes the manifest's name field. With
+   a NULL name it is taken from dir's last path component, or from the
+   current directory's name when dir is ".". Returns false, with an
+   error printed, if dir already has a manifest. An existing main.pw is
+   left as it is. */
 bool project_init(const char *dir, const char *name);

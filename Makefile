@@ -10,7 +10,7 @@ MANDIR ?= $(PREFIX)/share/man
 PAWELI ?= build/debug/paweli
 MANPAGES := docs/man/paweli.1 docs/man/paweli-syntax.7
 
-.PHONY: all build run debug relasserts reldebug release clean count test speedtest man install
+.PHONY: all build run debug relasserts reldebug release windows test-windows clean count test speedtest man install
 
 # Default: local debug build, outputs to build/debug/.
 all: build
@@ -37,6 +37,18 @@ reldebug:
 release:
 	cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
 	cmake --build build/release
+
+# Cross-compiles a Release paweli.exe for 64-bit Windows with MinGW-w64.
+windows:
+	cmake -S . -B build/windows -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake -DCMAKE_BUILD_TYPE=Release
+	cmake --build build/windows
+
+# Runs the test suite against build/windows/paweli.exe under wine.
+# winedbg is disabled so a crash returns an exit code instead of
+# opening a dialog.
+test-windows: windows
+	WINEDEBUG=-all WINEDLLOVERRIDES="winedbg.exe=d" PAWELI=$(CURDIR)/build/windows/paweli.exe PAWELI_RUNNER=wine PAWELI_EXE_SUFFIX=.exe ./scripts/run_tests.sh
+	WINEDEBUG=-all WINEDLLOVERRIDES="winedbg.exe=d" wine build/windows/jit_selftest.exe
 
 clean:
 	rm -rf build

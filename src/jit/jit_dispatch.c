@@ -4,9 +4,9 @@
 #include "jit_compile.h"
 #include "jit_dispatch.h"
 
-static uint32_t jit_hotness_threshold(void);
+static uint32_t jit_hotness_threshold();
 
-static uint32_t jit_hotness_threshold(void) {
+static uint32_t jit_hotness_threshold() {
 	static bool cached;
 	static uint32_t value;
 	const char *env;

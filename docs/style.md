@@ -199,9 +199,9 @@ Prefer `switch` over chains of `if/else if` when branching on an enum or small s
 No enforced line length.
 
 ## Portability
-Paweli will be ported to Windows eventually, so code must stay portable from the start:
+Paweli runs on Linux and Windows (MinGW-w64), so code must stay portable:
 
 - Never use GNU libc extensions (`asprintf`, `getline`, `strcasestr`, `memmem`, statement expressions `({ })`, nested functions, `__attribute__` outside of what MSVC/clang-cl also accept, etc.)
-- Never use POSIX-only APIs directly (`<unistd.h>`, `<pthread.h>`, `<sys/mman.h>`, `fork`, `mmap`, etc.). If platform-specific functionality is unavoidable, isolate it behind a small abstraction with a Windows implementation, not scattered `#ifdef __linux__` blocks
+- Never use POSIX-only APIs directly (`<unistd.h>`, `<pthread.h>`, `<sys/mman.h>`, `fork`, `mmap`, etc.). If platform-specific functionality is unavoidable, add it to `src/platform/platform.h` and implement it in both `posix.c` and `windows.c`. No scattered `#ifdef __linux__` blocks
 - Stick to standard C11 and the C standard library; anything beyond that must work on MSVC/MinGW too
 - Avoid GCC-only compiler extensions in source (`typeof`, `__builtin_*`, case ranges, etc.). Build-tool flags like sanitizers and `-fanalyzer` are fine since those are compiler config, not source code, but they must be guarded off on non-GNU toolchains

@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +8,7 @@
 #include "output.h"
 #include "parser/ast.h"
 #include "parser/parser.h"
+#include "platform/platform.h"
 
 static void dump_all_bytecode(obj_t *objects);
 static void dump_jit_stats(obj_t *objects);
@@ -51,13 +50,10 @@ static void dump_all_bytecode(obj_t *objects) {
 	}
 }
 
-/* Walks the same intrusive object list dump_all_bytecode() does, but
-   after the run finishes rather than before it starts: unlike a
-   function's bytecode (fixed at compile time), its JIT state
-   (src/jit/jit_dispatch.c) is only known once the program has actually
-   run long enough to cross the hotness threshold for each function.
-   Must be called before gc_free_all()/vm_free() free the very objects
-   being walked. */
+/* Prints each function's JIT state. It walks the same object list as
+   dump_all_bytecode(), but after the run, since the JIT state is only
+   known once the program has run. Call it before gc_free_all() and
+   vm_free() free the objects. */
 static void dump_jit_stats(obj_t *objects) {
 	obj_t *obj;
 	obj_function_t *function;
@@ -115,9 +111,8 @@ obj_function_t *exec_compile_from_source(const char *path, const char *source, g
 		const ast_node_t *import_node = program->as.program.imports.items[i];
 		token_t import_name = import_node->as.module_import.name;
 
-		// import_name's own line/column (the string literal), not
-		// import_node's (the '#module' keyword one column earlier), so
-		// diagnostics land on the module name itself.
+		// Use the position of the string literal, so the diagnostic lands on
+		// the module name.
 		entry_imports[i] = module_compile(import_name.start + 1, import_name.length - 2, path, path, source, import_name.line, import_name.column + 1, vm, resolver);
 		if (entry_imports[i] == NULL) {
 			print_error("failed to load a module required by '%s'", path);
@@ -181,9 +176,8 @@ int exec_run_source(const char *path, char *source, bool dump_ast, bool dump_byt
 
 	script = exec_compile_from_source(path, source, &heap, &strings, &vm, &resolver, &entry_globals, &entry_imports, &entry_import_count, dump_ast, run_tests);
 
-	// Not needed beyond the runtime bindings exec_compile_from_source()
-	// already wired into entry_globals; free immediately (a plain run
-	// doesn't serialize anything, unlike a build).
+	// A run does not need the import array. The bindings are already in
+	// entry_globals.
 	for (i = 0; i < entry_import_count; i++) {
 		module_unit_free_if_alias((module_unit_t *)entry_imports[i]);
 	}
@@ -198,29 +192,18 @@ int exec_run_source(const char *path, char *source, bool dump_ast, bool dump_byt
 	if (script == NULL) {
 		exit_code = 1;
 	} else {
-		// --run-tests is meant to be a hermetic, unattended run: a test
-		// exercising stdlib.read_line() on empty/closed stdin (see
-		// tests/suite/io.pw) would otherwise block on this process's
-		// real stdin whenever someone runs `paweli test` by hand from a
-		// terminal instead of through scripts/run_tests.sh's explicit
-		// `< /dev/null`. Redirecting here makes that the default instead
-		// of a footgun. A failed freopen() just leaves stdin as it was;
-		// nothing about running the tests depends on this succeeding.
-		if (run_tests && freopen("/dev/null", "r", stdin) == NULL) {
-			print_warning("could not redirect stdin to /dev/null for test mode");
+		// A test run must not wait on input. A test that calls
+		// stdlib.read_line() would block on the terminal when someone runs
+		// `paweli test` by hand. So stdin is pointed at the null device. A
+		// failure here is only a warning.
+		if (run_tests && !platform_stdin_from_null()) {
+			print_warning("could not redirect stdin to the null device for test mode");
 		}
 
-		// Every distinct module's own script only defines its functions
-		// as globals in its own private table (its exports are already
-		// wired into its module_obj->members by the compiler); each
-		// needs to run once so its functions can call each other later,
-		// none of them ever calls its own main(). resolver.compiled_units
-		// is already in dependency order (module_compile()'s recursion
-		// finishes a module's own imports before the module itself, so
-		// a plain append-on-finish list is already topologically
-		// sorted) and already deduplicated (a diamond-imported module
-		// appears once, not once per importer), so running it in that
-		// order, once each, is exactly right.
+		// Each module's script defines its functions in its own globals table.
+		// Run each once so those functions can call each other. A module's
+		// main() is never called. resolver.compiled_units is in dependency
+		// order and holds each module once.
 		for (i = 0; i < resolver.compiled_count && exit_code == 0; i++) {
 			result = vm_run(&vm, resolver.compiled_units[i]->script);
 			if (result != VM_OK) {
@@ -253,14 +236,11 @@ int exec_run_source(const char *path, char *source, bool dump_ast, bool dump_byt
 	return exit_code;
 }
 
-/* Shared tail for exec_run_paw() and exec_run_embedded(): both
-   have, by this point, only differed in *how* they got a
-   paw_program_t (a whole file vs. a byte range inside a larger
-   executable). Everything after that (optionally dumping bytecode,
-   running the module script before the entry script, and cleanup) is
-   identical. Takes ownership of vm/heap/strings (already initialized
-   by the caller) and program (may be NULL, meaning loading already
-   failed). */
+/* The shared tail of exec_run_paw() and exec_run_embedded(), which
+   only differ in where the paw_program_t came from. It dumps bytecode
+   if asked, runs the module scripts and then the entry script, and
+   cleans up. Takes ownership of vm, heap, strings, and program.
+   program may be NULL if loading failed. */
 static int run_paw_program(vm_t *vm, gc_heap_t *heap, table_t *strings, paw_program_t *program, bool dump_bytecode, bool jit_stats) {
 	vm_result_t result;
 	int exit_code;
@@ -275,9 +255,7 @@ static int run_paw_program(vm_t *vm, gc_heap_t *heap, table_t *strings, paw_prog
 	if (program == NULL) {
 		exit_code = 1;
 	} else {
-		// Same dependency-order, run-once-each guarantee as
-		// exec_run_source()'s own loop over resolver.compiled_units;
-		// see paw_program_t's own comment on module_scripts.
+		// Dependency order, once each. See module_scripts in paw_program_t.
 		for (i = 0; i < program->module_count && exit_code == 0; i++) {
 			result = vm_run(vm, program->module_scripts[i]);
 			if (result != VM_OK) {

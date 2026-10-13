@@ -28,21 +28,17 @@ struct obj {
 	obj_t *next;
 };
 
-// Every heap object is linked into heap->objects, a simple intrusive
-// linked list. gc_collect() (src/runtime/gc.c) walks it to sweep unmarked
-// objects. bytes_allocated tracks roughly how much heap memory is live;
-// gc.c grows next_gc after each collection and triggers the next one once
-// bytes_allocated passes it.
+// Every heap object is linked into heap->objects, an intrusive list
+// that gc_collect() walks to sweep. bytes_allocated is roughly the
+// live heap size. A collection runs once it passes next_gc, and next_gc
+// grows after each collection.
 typedef struct {
 	obj_t *objects;
 	size_t bytes_allocated;
 	size_t next_gc;
-	// PAWELI_GC_SAFEPOINT_CHECK support (gc.c's gc_heap_note_alloc()):
-	// bytes allocated since the last time any safepoint was reached,
-	// regardless of whether it actually triggered a collection. Reset
-	// unconditionally at every safepoint (vm.c's run() loop, and
-	// src/jit/jit_compile.c's emit_gc_check(), emitted directly into
-	// JIT'd code). Stays 0 forever if the check is disabled.
+	// For PAWELI_GC_SAFEPOINT_CHECK (see gc_heap_note_alloc()): the bytes
+	// allocated since the last safepoint. Every safepoint resets it, in
+	// run() and in JIT code. It stays 0 when the check is off.
 	size_t bytes_since_safepoint;
 	bool safepoint_check_enabled;
 } gc_heap_t;
@@ -54,10 +50,9 @@ typedef struct {
 	char *chars;
 } obj_string_t;
 
-// A named bag of members: the auto-registered "stdlib" pseudo-module, or
-// the public interface of a user file loaded via #module/#moduledef
-// (src/runtime/module.c). members only holds what that file explicitly
-// exported; everything else it declared stays private to it.
+// A named set of members: the built-in "stdlib" module, or the public
+// interface of a file loaded with #module. members holds only what the
+// file exported.
 typedef struct {
 	obj_t obj;
 	obj_string_t *name;
@@ -70,36 +65,20 @@ typedef enum {
 	JIT_FAILED,
 } jit_state_t;
 
-// A JIT-compiled function's native entry point (src/jit/jit_compile.c).
-// The callee finds its own already-pushed frame at
-// &vm->frames[vm->frame_count - 1] and its arguments at
-// frame->slots[0..arity), exactly as the interpreter would at that same
-// call. See src/jit/jit_compile.c's own file comment for the full
-// calling-convention contract (success/failure postconditions mirror
-// OP_RETURN and a failed interpreted call respectively).
+/* The native entry point of a JIT-compiled function. The callee finds
+   its frame at &vm->frames[vm->frame_count - 1] and its arguments at
+   frame->slots[0..arity), as the interpreter would. See jit_internal.h
+   for the register and stack contract. */
 typedef bool (*jit_entry_fn_t)(vm_t *vm);
 
-// globals is this function's home file's private global scope (every
-// function declared in the same file shares one, set once by
-// compiler_compile()). It is never NULL. module is that file's public
-// export table, set only when the file was loaded as a #moduledef; NULL
-// otherwise, which is what makes `export` a compile error outside one.
-// filename/source back the diagnostic snippets vm_runtime_error() renders
-// for a call into this function; both are borrowed, not owned, same as
-// obj_module_t's members table. jit_state/jit_hotness_count/jit_entry
-// are the JIT's own bookkeeping (src/jit/jit_dispatch.c increments
-// jit_hotness_count both on every call and on every OP_LOOP back-edge
-// run() executes for this function (a function called only once but
-// looping millions of times inside that call is exactly as JIT-worthy
-// as one called millions of times, so both signals feed the same
-// counter), and drives the JIT_NOT_COMPILED -> JIT_COMPILED/JIT_FAILED
-// transition; jit_entry stays NULL until compilation succeeds and is
-// never cleared afterward, since a compiled function is never
-// recompiled or invalidated). Compiling mid-loop can only ever benefit
-// a *later* call to the same function, never the one currently
-// interpreting the loop that triggered it. There is no
-// on-stack-replacement here, deliberately, matching the rest of the
-// JIT's no-speculation/no-deopt design.
+// globals is the private global scope of the function's home file,
+// shared by every function in that file and never NULL. module is the
+// file's export table, set only for a #moduledef file. filename and
+// source are borrowed and back the snippets in runtime errors.
+//
+// jit_hotness_count counts calls and OP_LOOP back-edges (see
+// jit_dispatch.h). jit_entry stays NULL until compilation succeeds and
+// is never cleared, since a compiled function is never recompiled.
 typedef struct {
 	obj_t obj;
 	int arity;
@@ -112,38 +91,19 @@ typedef struct {
 	obj_module_t *module;
 	const char *filename;
 	const char *source;
-	// One array element per static OP_GET_GLOBAL/OP_GET_PROPERTY call
-	// site in this function's compiled body, allocated (once, at its
-	// final size, never grown or freed) by jit_compile_function(). It is
-	// jit_compile_function()'s inline-caching mechanism for those two
-	// opcodes. Opaque
-	// here (cast to jit_table_cache_t* only inside jit_compile.c) for
-	// the same reason jit_entry_fn_t only describes the calling
-	// convention and not the compiled code's own internals: object.h
-	// forward-declares table_t (see below) specifically to avoid a
-	// circular include with table.h, so it has no way to name
-	// table_entry_t (an anonymous-struct typedef, not a tagged struct,
-	// so it can't be forward-declared the way table_t itself is) even
-	// if it wanted to spell out the cache cell's real layout here. NULL
-	// until/unless jit_compile_function() actually allocates one (a
-	// function with zero such call sites never does).
+	// The JIT's inline cache for OP_GET_GLOBAL and OP_GET_PROPERTY: one
+	// cell per call site, allocated once by jit_compile_function(). It is
+	// a jit_table_cache_t*, opaque here because this header cannot name
+	// table_entry_t. NULL if the function has no such call site or is not
+	// compiled.
 	void *jit_table_cache;
-	// Same shape and lifetime as jit_table_cache above, one element per
-	// static OP_CALL site instead. It is the JIT's inline caching for call
-	// dispatch itself (jit_call_cache_t, private to jit_compile.c). Also
-	// opaque here for the identical reason: no way to name
-	// jit_call_cache_t's own field types cleanly without a circular
-	// include, and object.h shouldn't need to know a compiled function's
-	// internal codegen details regardless.
+	// The same for OP_CALL sites: a jit_call_cache_t*, also opaque here.
 	void *jit_call_cache;
 } obj_function_t;
 
-// Natives report success or failure explicitly instead of just
-// returning a value. They need a way to signal a type or arity
-// error back to the VM, for example stdlib.abs("x"), without
-// crashing or producing garbage. On success, the result goes in
-// *out_result and the function returns true. On failure, it
-// reports the error itself via vm_runtime_error and returns false.
+/* A native returns true with its result in *out_result. On a type or
+   arity error, as in stdlib.abs("x"), it records the error with
+   vm_runtime_error() and returns false. */
 typedef bool (*native_fn_t)(vm_t *vm, int arg_count, value_t *args, value_t *out_result);
 
 typedef struct {
@@ -152,9 +112,8 @@ typedef struct {
 	const char *name;
 } obj_native_t;
 
-// values grows with realloc as elements are pushed, doubling capacity like
-// a chunk's bytecode buffer does. count is the number of live elements;
-// capacity is how many the current buffer can hold.
+// values grows by doubling as elements are pushed. count is the number
+// of elements and capacity is the size of the buffer.
 typedef struct {
 	obj_t obj;
 	value_t *values;
@@ -162,12 +121,9 @@ typedef struct {
 	size_t capacity;
 } obj_array_t;
 
-// A struct instance. fields is a fixed-size array, one value_t per field
-// in the struct's declared order. It is set once at construction (OP_STRUCT)
-// and never resized, unlike obj_array_t's values. field_count is that
-// declared field count; type_name is only used to name the type in
-// print() and object_type_name()-style diagnostics, matching how
-// obj_module_t carries its own name.
+// A struct instance. fields has one value_t per declared field, in
+// declared order. OP_STRUCT sets it once and it is never resized.
+// type_name is only used to name the type when printing.
 typedef struct {
 	obj_t obj;
 	obj_string_t *type_name;
@@ -175,15 +131,12 @@ typedef struct {
 	size_t field_count;
 } obj_struct_t;
 
-// A captured local, shared between the frame that owns it and every
-// closure that closed over it. location points into a live frame's stack
-// slot while open; vm.c's close_upvalues() (called from OP_RETURN and
-// OP_CLOSE_UPVALUE) copies the value into `closed` and repoints location
-// there once the owning frame is about to discard that slot, so a
-// closure that outlives the call it was created in still sees (and can
-// still mutate) the right storage. next threads every currently open
-// upvalue into vm->open_upvalues, sorted by stack depth (deepest first);
-// see vm.c's capture_upvalue()/close_upvalues().
+// A captured local, shared by the frame that owns it and every closure
+// that captured it. While open, location points at the frame's stack
+// slot. close_upvalues() copies the value into `closed` and points
+// location there before the frame discards the slot, so a closure that
+// outlives the call keeps the right storage. next links every open
+// upvalue into vm->open_upvalues, deepest slot first.
 typedef struct obj_upvalue {
 	obj_t obj;
 	value_t *location;
@@ -191,13 +144,10 @@ typedef struct obj_upvalue {
 	struct obj_upvalue *next;
 } obj_upvalue_t;
 
-// A closure: a function plus the upvalues it captured from every
-// enclosing scope, resolved once at OP_CLOSURE time. upvalues is a
-// fixed-size array, one per upvalue the compiler determined this
-// function's body actually references, in the order compiler.c's
-// resolve_upvalue() first saw them. function is a plain, separately
-// GC-tracked obj_function_t (the same object a bare, non-nested fn would
-// be); a closure only ever adds the captured environment on top of it.
+// A closure: a function plus the upvalues it captured, resolved once
+// at OP_CLOSURE. upvalues has one entry per upvalue the body uses, in
+// the order the compiler first resolved them. function is an ordinary
+// obj_function_t with its own GC lifetime.
 typedef struct {
 	obj_t obj;
 	obj_function_t *function;
@@ -205,25 +155,24 @@ typedef struct {
 	int upvalue_count;
 } obj_closure_t;
 
-/* All object constructors link the new object into heap->objects and add
-   to heap->bytes_allocated. Objects live until gc_collect() (or
-   gc_free_all() at shutdown) frees them; nothing here frees on its own.
+/* Every constructor links the new object into heap->objects and adds
+   to heap->bytes_allocated. Only gc_collect() and gc_free_all() free
+   objects.
 
-   Strings are interned through *strings. Identical content always
-   returns the same obj_string_t pointer. That is what lets the globals
-   table compare keys by pointer instead of content. The intern table
-   only holds weak references: gc_collect() removes an entry whenever
-   its string was not otherwise reachable, see table_remove_white(). */
+   Strings are interned through *strings: the same content always gives
+   the same obj_string_t pointer, so tables compare keys by pointer.
+   The intern table holds weak references. gc_collect() removes an
+   entry when nothing else reaches its string (see
+   table_remove_white()). */
 obj_string_t *object_new_string(gc_heap_t *heap, table_t *strings, const char *chars, size_t length);
 
-/* Like object_new_string, but decodes backslash escapes (\n \t \r \\ \" \0)
-   in raw first. raw must not include the surrounding quotes. This is
-   where the lexer's deferred escape decoding actually happens. */
+/* Like object_new_string(), but decodes the backslash escapes
+   (\n \t \r \\ \" \0) in raw first. raw does not include the quotes.
+   The lexer leaves escapes undecoded for this function. */
 obj_string_t *object_new_string_from_literal(gc_heap_t *heap, table_t *strings, const char *raw, size_t raw_length);
 
-/* Concatenates a and b into a freshly interned string. Shared by `+` on
-   two strings (src/runtime/vm.c's binary_op()) and stdlib.concat
-   (src/stdlib/string.c). */
+/* Concatenates a and b into an interned string. Used by `+` on two
+   strings and by stdlib.concat. */
 obj_string_t *object_new_string_concat(gc_heap_t *heap, table_t *strings, obj_string_t *a, obj_string_t *b);
 
 obj_function_t *object_new_function(gc_heap_t *heap);
@@ -231,28 +180,23 @@ obj_native_t *object_new_native(gc_heap_t *heap, native_fn_t function, const cha
 obj_module_t *object_new_module(gc_heap_t *heap, obj_string_t *name);
 obj_array_t *object_new_array(gc_heap_t *heap);
 
-// field_count fields are allocated but left uninitialized; the caller
-// (OP_STRUCT's handler in vm.c) fills every slot immediately afterward,
-// so there is never an observable half-constructed instance.
+/* The fields are allocated but not initialized. The caller fills every
+   slot right away. */
 obj_struct_t *object_new_struct(gc_heap_t *heap, obj_string_t *type_name, size_t field_count);
 
-// upvalue_count entries are allocated but left uninitialized; the caller
-// (OP_CLOSURE's handler in vm.c) fills every slot immediately afterward,
-// same convention as object_new_struct's fields.
+/* The upvalue entries are allocated but not initialized. The caller
+   fills every slot right away. */
 obj_closure_t *object_new_closure(gc_heap_t *heap, obj_function_t *function, int upvalue_count);
 
 obj_upvalue_t *object_new_upvalue(gc_heap_t *heap, value_t *location);
 
-/* Appends value to array, growing values with realloc if capacity is
-   reached. Updates heap->bytes_allocated by the size of the growth, if
-   any, same as a fresh object_new_*() call would. */
+/* Appends value to array and grows the buffer if needed. Any growth is
+   added to heap->bytes_allocated. */
 void object_array_push(gc_heap_t *heap, obj_array_t *array, value_t value);
 
-/* Frees obj and subtracts its size back out of heap->bytes_allocated,
-   undoing what the matching object_new_*() call added. Every free must
-   go through here, direct free() calls elsewhere would leave
-   bytes_allocated permanently overcounting and the GC would collect
-   less and less often as a program runs. */
+/* Frees obj and subtracts its size from heap->bytes_allocated. Every
+   free must go through here. A direct free() would leave
+   bytes_allocated too high, and the GC would run less and less often. */
 void object_free(gc_heap_t *heap, obj_t *obj);
 void object_print(const obj_t *obj, FILE *out);
 const char *object_type_name(obj_type_t type);

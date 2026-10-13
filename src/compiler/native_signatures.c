@@ -12,12 +12,9 @@ static void add(signature_table_t *table, const char *name, type_t *params, size
 void native_signatures_init(signature_table_t *globals, signature_table_t *stdlib_members) {
 	type_t params[2];
 
-	// print(): 0 args. Everything about the printed value is checked
-	// dynamically at runtime, the same as it always has been; there is
-	// no way to express "any type" for a single fixed param here (see
-	// length/push/pop below for the same problem), so the 1-arg form is
-	// deliberately left uncovered by this table and special-cased by the
-	// compiler alongside them.
+	// print() with no arguments. A fixed parameter cannot say "any type",
+	// so the compiler handles the one-argument form itself (see
+	// compile_bare_call()).
 	add(globals, "print", NULL, 0, true, type_void());
 
 	params[0] = type_bool();

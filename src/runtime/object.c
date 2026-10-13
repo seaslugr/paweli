@@ -280,24 +280,11 @@ void object_free(gc_heap_t *heap, obj_t *obj) {
 			function = (obj_function_t *)obj;
 			heap->bytes_allocated -= sizeof(obj_function_t);
 			chunk_free(&function->chunk);
-			// Unlike jit_entry's executable mapping (mmap, never
-			// unmapped even here. See jit_exec_mem.h's own comment;
-			// invisible to ASan/LeakSanitizer either way, since that's
-			// a different allocator than the one they track), the JIT's
-			// inline-caching buffer (jit_table_cache_t*, see
-			// jit_compile.c's own comment on the type) is a plain
-			// calloc(), fully within malloc-family tracking. Once
-			// `function` itself is freed below, nothing else in the
-			// process holds this pointer, so it has to be freed here
-			// explicitly or it becomes a genuine, ASan-visible leak.
-			// Safe regardless of GC timing: nothing can still be
-			// executing this function's compiled code or consulting
-			// its cache once the function object itself is being
-			// destroyed.
+			// The JIT cache arrays come from calloc() and nothing else holds them,
+			// so they are freed with the function. No code can still be running
+			// the function or reading its cache at this point. The executable
+			// mapping at jit_entry is never unmapped (see jit_exec_mem.h).
 			free(function->jit_table_cache);
-			// Same reasoning as jit_table_cache above. jit_call_cache
-			// (jit_call_cache_t*, jit_compile.c's own inline caching for
-			// OP_CALL dispatch) is also a plain calloc().
 			free(function->jit_call_cache);
 			free(function);
 			break;
@@ -326,10 +313,7 @@ void object_free(gc_heap_t *heap, obj_t *obj) {
 			free(instance);
 			break;
 		case OBJ_CLOSURE:
-			// Does not free closure->function: that obj_function_t is a
-			// separate, independently GC-tracked heap object (the same
-			// kind a non-nested fn's global binding points at), not owned
-			// by the closure that wraps it.
+			// closure->function is a separate GC object and is not freed here.
 			closure = (obj_closure_t *)obj;
 			heap->bytes_allocated -= sizeof(obj_closure_t) + (size_t)closure->upvalue_count * sizeof(obj_upvalue_t *);
 			free(closure->upvalues);

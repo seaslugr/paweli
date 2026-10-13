@@ -13,14 +13,9 @@ static void emit_group3(jit_asm_t *a, uint8_t digit, jit_reg_t reg);
 static void emit_shift_cl(jit_asm_t *a, uint8_t digit, jit_reg_t dst);
 static void emit_sse_reg_reg(jit_asm_t *a, uint8_t mandatory_prefix, uint8_t opcode, jit_xmm_reg_t dst, jit_xmm_reg_t src);
 
-/* -fanalyzer flags the realloc() below as a theoretical leak-on-NULL
-   (CWE-401): same unchecked-realloc-and-reassign idiom chunk_t's own
-   chunk_write() (src/compiler/chunk.c) already uses for its growable
-   buffer, which the analyzer doesn't happen to flag. This project
-   doesn't check allocation failure anywhere (an out-of-memory abort
-   isn't a scenario worth guarding against for a hobby VM). This is
-   the same accepted pattern the analyzer's path exploration reaches
-   here and not there. */
+/* -fanalyzer flags this realloc() as a possible leak on NULL. This
+   project does not check allocation failure anywhere, so the warning
+   is accepted. */
 static void emit8(jit_asm_t *a, uint8_t byte) {
 	if (a->count == a->capacity) {
 		a->capacity = a->capacity < 64 ? 64 : a->capacity * 2;
@@ -42,8 +37,8 @@ static void emit64(jit_asm_t *a, uint64_t value) {
 	emit32(a, (uint32_t)(value >> 32));
 }
 
-/* Always emits a REX prefix, even a bare 0x40 with nothing set. Legal
-   in 64-bit mode and simpler than tracking when one can be omitted. */
+/* Always emits a REX prefix, even an empty 0x40. That is legal in
+   64-bit mode and simpler than working out when to leave it out. */
 static uint8_t rex(int w, jit_reg_t reg_field, jit_reg_t rm_or_base) {
 	uint8_t r;
 	uint8_t b;
@@ -57,12 +52,10 @@ static void emit_modrm_reg_reg(jit_asm_t *a, jit_reg_t reg_field, jit_reg_t rm_f
 	emit8(a, (uint8_t)(0xC0 | ((reg_field & 7) << 3) | (rm_field & 7)));
 }
 
-/* Always encodes mod=10 (disp32), even when disp is 0. mod=00 with an
-   rm of 101 (rbp/r13) means RIP-relative addressing instead of
-   [rbp+disp], so always using mod=10 sidesteps that special case
-   entirely. rm=100 (rsp/r12) always requires a SIB byte regardless of
-   mod; SIB 0x24 (scale=00, index=100 "none", base=100) is that byte,
-   with the actual base register communicated via REX.B, same as usual. */
+/* Always encodes mod=10 (disp32), even for a disp of 0. mod=00 with
+   rbp or r13 as the base means RIP-relative, and this avoids that
+   case. A base of rsp or r12 needs a SIB byte. 0x24 is that byte, and
+   REX.B picks between the two registers. */
 static void emit_modrm_mem(jit_asm_t *a, jit_reg_t reg_field, jit_reg_t base, int32_t disp) {
 	int base_low;
 
@@ -93,19 +86,11 @@ static void emit_shift_cl(jit_asm_t *a, uint8_t digit, jit_reg_t dst) {
 	emit8(a, (uint8_t)(0xC0 | (digit << 3) | (dst & 7)));
 }
 
-/* Every SSE2 scalar-double reg-reg instruction here shares this exact
-   shape: a one-byte mandatory prefix (F2 for arithmetic, 66 for
-   UCOMISD. Easy to mix up, which is exactly why it's a parameter
-   rather than hardcoded per call site), then REX (W=0, since operand size
-   for these is fixed by the opcode/prefix, not REX.W, unlike the GPR
-   primitives above), then the two-byte 0F-prefixed opcode, then a
-   mod=11 ModRM. The reg/rm role split (dst is always ModRM.reg, src is
-   always ModRM.rm) matches Intel's own operand order for every
-   instruction this is used for. jit_xmm_reg_t and jit_reg_t share the
-   same 0-15 numbering by construction (see jit_asm.h), so casting into
-   the existing GPR-typed rex()/emit_modrm_reg_reg() helpers is exactly
-   as safe as it looks. They only ever do numeric >=8/mask-by-7
-   arithmetic on the register number, never anything GPR-specific. */
+/* Every SSE2 scalar-double reg-reg instruction has this shape: a
+   mandatory prefix (F2 for arithmetic, 66 for UCOMISD), REX with W=0,
+   the 0F opcode pair, then a mod=11 ModRM with dst in reg and src in
+   rm. jit_xmm_reg_t uses the same 0-15 numbering as jit_reg_t, so the
+   casts into rex() and emit_modrm_reg_reg() are safe. */
 static void emit_sse_reg_reg(jit_asm_t *a, uint8_t mandatory_prefix, uint8_t opcode, jit_xmm_reg_t dst, jit_xmm_reg_t src) {
 	emit8(a, mandatory_prefix);
 	emit8(a, rex(0, (jit_reg_t)dst, (jit_reg_t)src));
@@ -268,15 +253,9 @@ void jit_emit_setcc_reg8(jit_asm_t *a, jit_cc_t cc, jit_reg_t reg) {
 	emit8(a, (uint8_t)(0xC0 | (reg & 7)));
 }
 
-/* Mem-operand forms use ModRM.reg for the XMM register regardless of
-   which side (dst or src) it's on. Intel's own MOVSD encoding always
-   puts the register operand in ModRM.reg and the memory operand in
-   ModRM.rm, unlike the reg-reg SSE ops above where both operands are
-   registers and the role split is dst=reg/src=rm by convention. The
-   base GPR for addressing goes through the same emit_modrm_mem() every
-   GPR load/store already uses (mod=10/disp32 always, SIB 0x24 when
-   base is rsp/r12), just with an XMM register in the reg-field slot
-   instead of a GPR. */
+/* With a memory operand, MOVSD always puts the XMM register in
+   ModRM.reg and the memory in ModRM.rm, for load and store alike. The
+   address goes through the same emit_modrm_mem() the GPR forms use. */
 void jit_emit_movsd_reg_mem(jit_asm_t *a, jit_xmm_reg_t dst, jit_reg_t base, int32_t disp) {
 	emit8(a, 0xF2);
 	emit8(a, rex(0, (jit_reg_t)dst, base));

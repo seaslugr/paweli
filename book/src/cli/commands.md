@@ -36,7 +36,7 @@ It refuses to run if a manifest is already there.
 | Flag | Description |
 |---|---|
 | `[output.paw]` | Optional second positional argument. Says where to write the compiled `.paw` file. Defaults to the input path with `.pw` replaced by `.paw`. If the input doesn't end in `.pw`, `.paw` is appended. Unused with `--bin`, which names its own output. |
-| `--bin <name>` | Builds a native executable named `name` in place of a `.paw` file. See [Native Executables](native-executables.md). |
+| `--bin <name>` | Builds a native executable named `name` in place of a `.paw` file. On Windows the output is `name.exe`. See [Native Executables](native-executables.md). |
 | `--strip-source` | Leaves the source text out of the output, which makes the file smaller. A runtime error from the result still prints its `[code] file:line: message` and call stack. It only loses the source-line snippet under it. Source is embedded by default. |
 | `--run-tests` | Bakes test mode into the compiled program. Running the result runs every `@test` function and skips `main()`, like `paweli test` does for a `.pw` file. This flag only exists on `build`. For a single run, use `paweli test`. |
 

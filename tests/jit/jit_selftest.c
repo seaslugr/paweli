@@ -1,12 +1,7 @@
-// Standalone harness for Phase (a) of the JIT: jit_compile_function()
-// is not reachable from any .pw script yet (call_value() doesn't
-// dispatch to compiled code until src/jit/jit_dispatch.c exists), so
-// this drives it directly against a hand-built chunk_t, the same way
-// scripts/run_tests.sh drives the real paweli binary against tests/*.pw.
-// Uses plain if/return checks rather than assert(): NDEBUG (set by the
-// Release config) compiles assert() away entirely, which would silently
-// turn this into a no-op "test" under exactly the build this project's
-// verification bar requires checking.
+// A standalone test of jit_compile_function(). It builds a chunk_t by
+// hand and runs the compiled code directly, with no .pw script. It
+// uses plain if/return checks. A Release build defines NDEBUG, which
+// compiles assert() out and would make the test check nothing.
 #include <stdio.h>
 
 #include "compiler/chunk.h"
@@ -43,13 +38,9 @@ int main() {
 
 	vm_init(&vm, &heap, &strings, "<jit-selftest>", "", VM_DEFAULT_STACK_SIZE, VM_DEFAULT_MAX_FRAMES);
 
-	// Mirrors call_value()'s actual invariant: the callee value itself
-	// is left sitting on the stack (never popped) right below
-	// frame->slots, so OP_RETURN's `frame->slots - 1` always lands on
-	// a real, in-bounds slot to overwrite with the return value. Every
-	// real call_value() caller (OP_CALL, vm_call_value()) guarantees
-	// this; only vm_run()'s top-level frame doesn't, and that frame is
-	// never JIT-dispatched (see src/jit/jit_compile.c's file comment).
+	// The same layout call_value() sets up: the callee value stays on the
+	// stack right below frame->slots, so the return value has a slot to
+	// overwrite at frame->slots - 1.
 	*vm.stack_top = value_obj((obj_t *)function);
 	vm.stack_top++;
 

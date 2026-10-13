@@ -78,10 +78,8 @@ static bool signature_types_match(const signature_t *signature, const type_t *ar
 	}
 
 	for (i = 0; i < arg_count; i++) {
-		// null is compatible with any parameter type, the same way it is
-		// compatible with any declared variable type: there is no
-		// nullable-type annotation in paweli, so this is the only way a
-		// literal `null` argument can ever match anything.
+		// null matches any parameter type, as it matches any declared variable
+		// type.
 		if (arg_types[i].kind == TYPE_NULL) {
 			continue;
 		}

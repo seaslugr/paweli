@@ -5,28 +5,22 @@ typedef enum {
 	DIAG_WARNING,
 } diag_severity_t;
 
-/* Shared reporter used by the lexer, parser, compiler, and VM so every
-   stage prints diagnostics in one format:
+/* Reports one diagnostic. The lexer, parser, compiler, and VM all use
+   it, so every stage prints the same format:
 
-       [code] file:line:col: severity: message
-         line | source text
-              |      ^^^^^^^
+     [code] file:line:col: severity: message
+      line | source text
+           |        ^^^^^^^
 
-   column <= 0 means "no column available" (e.g. VM runtime errors, which
-   only have a line number from the bytecode's line table); that stage and
-   the caret line are then omitted: "[code] file:line: severity: message".
+   column <= 0 means no column is known. VM runtime errors only have a
+   line. The column and the caret line are then left out.
 
-   length is how many source characters, starting at column, the caret
-   should underline. <= 1 draws a single '^' (the old behavior); pass the
-   length of whatever token or name the diagnostic is actually about
-   (e.g. an identifier's token.length) to underline it in full. A length
-   that would run past the end of the offending line is clamped to fit.
+   length is the number of source characters the caret underlines,
+   starting at column. <= 1 draws one '^'. A length that runs past the
+   end of the line is clamped.
 
-   source is the whole file's null-terminated text, used to render the
-   snippet; pass NULL to skip the snippet entirely (no source available,
-   e.g. an error found before the file was read).
+   source is the whole file as null-terminated text. Pass NULL to skip
+   the snippet.
 
-   Output is colored (bold severity, lime code, green caret) when stderr
-   is a terminal and the NO_COLOR environment variable is unset; otherwise
-   it prints as plain text. */
+   Output is colored when stderr is a terminal and NO_COLOR is unset. */
 void diagnostic_emit(diag_severity_t severity, const char *code, const char *filename, const char *source, int line, int column, int length, const char *format, ...);

@@ -28,20 +28,28 @@ jobs:
           fi
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build mingw-w64
 
       - name: Build release binary
         run: |
           cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build/release
 
-      - name: Package binary and checksum
+      - name: Build Windows release binary
+        run: |
+          cmake -S . -B build/windows -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/windows
+
+      - name: Package binaries and checksums
         run: |
           mkdir -p dist
-          asset="paweli-${GITHUB_REF_NAME}-linux-x86_64"
-          cp build/release/paweli "dist/${asset}"
-          chmod +x "dist/${asset}"
-          ( cd dist && sha256sum "${asset}" > "${asset}.sha256" )
+          linux_asset="paweli-${GITHUB_REF_NAME}-linux-x86_64"
+          windows_asset="paweli-${GITHUB_REF_NAME}-windows-x86_64.exe"
+          cp build/release/paweli "dist/${linux_asset}"
+          chmod +x "dist/${linux_asset}"
+          cp build/windows/paweli.exe "dist/${windows_asset}"
+          ( cd dist && sha256sum "${linux_asset}" > "${linux_asset}.sha256" )
+          ( cd dist && sha256sum "${windows_asset}" > "${windows_asset}.sha256" )
 
       - name: Create GitHub Release
         env:

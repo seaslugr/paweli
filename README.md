@@ -103,7 +103,9 @@ make test
 ```
 
 ## Platform Support
-Paweli currently supports Linux only. Windows and macOS support is planned in the future.
+Paweli supports x86_64 Linux and x86_64 Windows. macOS and ARM support is planned in the future.
+
+The Windows build is cross-compiled from Linux with MinGW-w64: `make windows` writes `build/windows/paweli.exe`.
 
 ## License
 Paweli itself is licensed under [GPLv3](LICENSE).

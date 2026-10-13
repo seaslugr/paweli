@@ -11,7 +11,7 @@ Currently, `paweli` is "build from source" only.
 ## Building & Installing
 
 ```bash
-git clone https://github.com/Foox-dev/paweli
+git clone https://github.com/seaslugr/paweli
 cd paweli
 sudo make install-release
 ```
@@ -24,6 +24,22 @@ Override `PREFIX` (default `/usr/local`) or `DESTDIR`, e.g. for packaging:
 
 ```bash
 make install-release PREFIX=/usr DESTDIR=/tmp/pkgroot
+```
+
+## Building for Windows
+
+Currently, the Windows build is cross-compiled from Linux with MinGW-w64. You need `x86_64-w64-mingw32-gcc` installed.
+
+```bash
+make windows
+```
+
+This puts `paweli.exe` in `build/windows/`. It is a single static file with no DLLs to ship. Copy it to a Windows machine and run it from a terminal.
+
+If you have wine, you can run the test suite against it:
+
+```bash
+make test-windows
 ```
 
 ## Checking the install

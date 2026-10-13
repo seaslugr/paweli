@@ -1,16 +1,11 @@
-// fileno() and isatty() are POSIX, not ISO C11 (this project builds with
-// CMAKE_C_EXTENSIONS OFF, i.e. strict -std=c11), so stdio.h/unistd.h don't
-// declare them without an explicit feature-test macro.
-#define _POSIX_C_SOURCE 200809L
-
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "diagnostic.h"
+#include "platform/platform.h"
 
 #define COLOR_RESET "\x1b[0m"
 #define COLOR_BOLD "\x1b[1m"
@@ -19,11 +14,11 @@
 #define COLOR_LIME "\x1b[38;5;149m"
 #define COLOR_GREEN "\x1b[1;32m"
 
-static bool color_enabled(void) {
+static bool color_enabled() {
 	static int cached = -1;
 
 	if (cached == -1) {
-		cached = (getenv("NO_COLOR") == NULL) && isatty(fileno(stderr)) ? 1 : 0;
+		cached = (getenv("NO_COLOR") == NULL) && platform_stream_is_tty(stderr) ? 1 : 0;
 	}
 	return cached != 0;
 }
@@ -44,10 +39,9 @@ static const char *severity_color(diag_severity_t severity) {
 	return COLOR_RED;
 }
 
-/* Finds the 1-indexed `line`'s text within `source` (the whole file's
-   null-terminated text). out_start and out_length describe that line's
-   text, not including its trailing newline. Returns false if `line` doesn't
-   exist in source (out of range, or source is NULL). */
+/* Finds the text of the 1-indexed line in source. out_start and
+   out_length describe that text without its trailing newline. Returns
+   false if the line does not exist or source is NULL. */
 static bool find_source_line(const char *source, int line, const char **out_start, size_t *out_length) {
 	int current_line;
 	const char *p;
@@ -78,16 +72,11 @@ static bool find_source_line(const char *source, int line, const char **out_star
 	return true;
 }
 
-/* Diagnostics anchored at end-of-file land one line past the final
-   newline, at column 1 (the lexer just keeps counting lines as it skips
-   trailing whitespace). That "line" is a phantom: it has no content, so
-   rendering it as a snippet just shows an empty line with a floating
-   caret and no context. This walks back to the nearest real line (one
-   that has content, or at least isn't sitting right at the end of the
-   buffer with nothing after it) and repoints line/column just past its
-   last character instead. A genuinely blank line the user wrote is left
-   alone: it's followed by more source rather than sitting at the very
-   end of the buffer, so it doesn't match the "phantom" check below. */
+/* A diagnostic at end-of-file lands one line past the final newline,
+   at column 1. That line has no content, so its snippet would be an
+   empty line with a floating caret. This walks back to the nearest
+   line with content and points just past its last character. A blank
+   line the user wrote in the middle of the file is left alone. */
 static void clamp_to_source(const char *source, int *line, int *column) {
 	const char *line_start;
 	size_t line_length;
@@ -113,15 +102,11 @@ static void clamp_to_source(const char *source, int *line, int *column) {
 }
 
 /* Prints the offending source line and, when column is known, a caret
-   line under it. Tabs in the source line are reproduced (not replaced by
-   spaces) in the padding before the caret, so the caret lines up
-   correctly whatever width the terminal expands tabs to.
+   line under it. The padding before the caret copies tabs from the
+   source line, so the caret lines up at any tab width.
 
-   length is how many source characters the caret should underline: <= 1
-   draws the historical single '^'; a larger value draws a run of '^'
-   that many characters wide, clamped to whatever of the offending line
-   actually remains from column onward (a token's reported length can
-   run past a truncated or clamped line, e.g. after clamp_to_source()). */
+   length is the number of characters the caret underlines. <= 1 draws
+   one '^'. A longer run is clamped to what remains of the line. */
 static void print_snippet(const char *source, int line, int column, int length, bool color) {
 	const char *line_start;
 	size_t line_length;

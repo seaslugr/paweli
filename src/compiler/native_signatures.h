@@ -2,18 +2,14 @@
 
 #include "signature.h"
 
-/* Populates globals with print/assert's signatures, and stdlib_members
-   with every stdlib.* native's signature, so the type checker can check
-   calls into them exactly the way it checks calls into user functions.
-   Both are ordinary signature_table_t values; free them with
-   signature_table_free() like any other. Natives are never mangled.
-   There is exactly one registered obj_native_t per name at runtime,
-   regardless of how many signatures it type-checks against here. A
-   resolved call to one of these always uses its plain registered name
-   for the runtime lookup, never signature->mangled_name.
+/* Fills globals with the signatures of print and assert, and
+   stdlib_members with the signature of every stdlib.* native, so calls
+   to them are type-checked like calls to user functions. Free both
+   with signature_table_free(). Natives are never mangled. One
+   obj_native_t backs every signature of a name, and a call always
+   looks it up by its plain name.
 
-   length/push/pop are deliberately NOT registered here: they are
-   polymorphic over array element type ("(T[]) -> int" for any T), which
-   a fixed signature_t has no way to express. The compiler special-cases
-   those three names directly instead of consulting this table. */
+   length, push, and pop are not registered here. They work on an array
+   of any element type, which a fixed signature cannot say. The
+   compiler handles those three names itself. */
 void native_signatures_init(signature_table_t *globals, signature_table_t *stdlib_members);

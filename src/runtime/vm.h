@@ -12,12 +12,10 @@
 
 typedef struct {
 	obj_function_t *function;
-	// NULL for a direct call to a bare (non-nested, no upvalues)
-	// obj_function_t, e.g. every top-level fn. Non-NULL only when this
-	// frame is running as a closure, set by call_value()'s OBJ_CLOSURE
-	// case; OP_GET_UPVALUE/OP_SET_UPVALUE index closure->upvalues[] and
-	// are only ever emitted inside a nested fn's own chunk, so this is
-	// never dereferenced null.
+	// NULL for a call to a plain function, such as every top-level fn.
+	// Non-NULL when the frame runs a closure. OP_GET_UPVALUE and
+	// OP_SET_UPVALUE only appear in a nested fn's chunk, so they never see
+	// NULL here.
 	obj_closure_t *closure;
 	uint8_t *ip;
 	value_t *slots;
@@ -28,11 +26,8 @@ typedef enum {
 	VM_RUNTIME_ERROR,
 } vm_result_t;
 
-// One entry per loaded file (the entry script, plus one per module
-// module_compile() has compiled). The vm owns and frees these: the
-// entry file's own source is the one exception, still owned by main.c,
-// matching vm_init()'s existing no-ownership convention for it, so it
-// is never registered here.
+// One entry per loaded module file. The vm owns and frees these. The
+// entry file's source is owned by the caller and is not listed.
 typedef struct {
 	char *path;
 	char *source;
@@ -47,9 +42,8 @@ typedef struct vm {
 	value_t *stack_top;
 	size_t stack_size;
 
-	// One globals table per loaded file (see vm_new_file_globals()),
-	// never freed mid-run, always a GC root: matches the pre-module
-	// behavior where a single globals table was always fully marked.
+	// One globals table per loaded file (see vm_new_file_globals()). Every
+	// table is a GC root and lives until vm_free().
 	table_t **file_globals;
 	size_t file_globals_count;
 	size_t file_globals_capacity;
@@ -58,168 +52,116 @@ typedef struct vm {
 	size_t owned_sources_count;
 	size_t owned_sources_capacity;
 
-	// Every currently open upvalue, sorted by stack depth (deepest/most
-	// recently pushed first). A permanent-until-closed GC root (see
-	// gc.c's mark_roots()): close_upvalues() needs to walk this list at
-	// the frame's actual return time regardless of whether any live
-	// closure still references a given entry, so an upvalue cannot be
-	// collected just because its closure already was.
+	// Every open upvalue, deepest stack slot first. It is a GC root.
+	// close_upvalues() walks it when a frame returns, so an upvalue must
+	// stay alive even if its closure is gone.
 	obj_upvalue_t *open_upvalues;
 
 	gc_heap_t *heap;
 	table_t *strings;
 
-	// When true, gc_collect() runs before every instruction instead of
-	// only once bytes_allocated crosses next_gc. Set from the
-	// PAWELI_GC_STRESS environment variable (any non-empty value).
-	// Deliberately aggressive: it is meant to turn a missed GC root into
-	// an immediate, reproducible use-after-free instead of a rare one,
-	// especially under ASan.
+	// When true, gc_collect() runs before every instruction. Set from
+	// PAWELI_GC_STRESS. It turns a missed GC root into an immediate
+	// use-after-free that ASan can report.
 	bool gc_stress;
 
 	const char *filename;
-	// Whole file's null-terminated text, kept only to render source
-	// snippets in diagnostics. vm_t does not own it.
+	// The whole file as null-terminated text, for diagnostic snippets.
+	// Not owned.
 	const char *source;
 
-	// Set by vm_runtime_error() on every failure, whether or not
-	// anything ends up catching it. Rendering the full diagnostic
-	// (header, snippet, stack trace) is deferred until it's known for
-	// certain nothing did; see vm_print_uncaught_error()'s own comment.
-	// Only the plain message needs storing here: an uncaught error's
-	// full rendering (source snippet, stack trace) still reads directly
-	// from vm->frames, which stay exactly as they were at the moment of
-	// failure. Nothing runs between a top-level vm_run() returning
-	// VM_RUNTIME_ERROR and main.c calling vm_print_uncaught_error(), and
-	// an OP_TRY_CALL that *did* catch something never reaches this path
-	// at all (it handles the failure itself, not the caller).
+	// Set by vm_runtime_error() on every failure, caught or not. Only the
+	// message is stored. vm_print_uncaught_error() renders the snippet and
+	// stack trace later from vm->frames, which stay as they were at the
+	// failure.
 	char error_code[64];
 	char error_message[1024];
 } vm_t;
 
-/* Does not take ownership of heap, strings, or source. Same convention
-   as the compiler: the caller frees them once done. Does NOT create the
-   entry file's globals table or install the stdlib into it; the caller
-   must do that itself via vm_new_file_globals() before compiling (see
-   src/main.c), since the compiler needs that table to exist first.
-   stack_size and max_frames configure the VM's value stack and
-   call-frame depth. stack_size must be at least VM_MIN_STACK_SIZE. */
+/* Does not take ownership of heap, strings, or source. The caller
+   frees them. It does not create the entry file's globals table. Call
+   vm_new_file_globals() for that before compiling, since the compiler
+   needs the table. stack_size must be at least VM_MIN_STACK_SIZE. */
 void vm_init(vm_t *vm, gc_heap_t *heap, table_t *strings, const char *filename, const char *source, size_t stack_size, int max_frames);
 void vm_free(vm_t *vm);
 vm_result_t vm_run(vm_t *vm, obj_function_t *script);
 
-/* Allocates a fresh, empty globals table, pre-populated with "print" and
-   the "stdlib" module (same as every other file gets, no #module
-   needed), and registers it as a permanent GC root. Returns it for the
-   caller to pass into compiler_compile() as file_globals. Called once
-   for the entry file (src/main.c) and once per loaded module
-   (src/runtime/module.c); the vm owns the table either way and frees it
-   in vm_free(). */
+/* Allocates an empty globals table, adds "print" and the "stdlib"
+   module, and registers it as a GC root. Pass the result to
+   compiler_compile() as file_globals. Called once for the entry file
+   and once per module. The vm owns the table and frees it in
+   vm_free(). */
 table_t *vm_new_file_globals(vm_t *vm);
 
-/* Registers path/source as owned by the vm, freed in vm_free(). Used by
-   module.c to keep a loaded module's source text alive for the rest of
-   the run, since a runtime error from inside it needs to render a
-   snippet from that exact source at any later point. */
+/* Hands path and source to the vm, which frees them in vm_free().
+   module.c uses it to keep a module's source alive, since a runtime
+   error can need a snippet from it at any time. */
 void vm_track_owned_source(vm_t *vm, char *path, char *source);
 
-/* Exposed so native functions (in src/stdlib) can report their own type
-   or arity errors. They use the same mechanism the VM itself uses. code
-   is a "vm::*" diagnostic code, see diagnostics/diagnostic.h. Records
-   the message into vm->error_code/vm->error_message, but does NOT print
-   anything itself. A try/catch (OP_TRY_CALL) might still catch this
-   before it becomes a real, user-visible failure. Call
-   vm_print_uncaught_error() to actually render and print it once it's
-   known nothing did. */
+/* Records a runtime error in vm->error_code and vm->error_message.
+   code is a "vm::*" diagnostic code. Natives in src/stdlib use it for
+   their own type and arity errors. It prints nothing: an OP_TRY_CALL
+   may still catch the error. Call vm_print_uncaught_error() once it is
+   known that nothing did. */
 void vm_runtime_error(vm_t *vm, const char *code, const char *format, ...);
 
-/* Renders and prints the full diagnostic (header, source snippet, call
-   stack) for vm->error_code/vm->error_message. This is exactly what
-   vm_runtime_error() used to do unconditionally; it is now split out so a
-   caller only reaches this once a top-level vm_run() has returned
-   VM_RUNTIME_ERROR with nothing having caught it along the way. Reads
-   vm->frames directly, which is safe: nothing runs between the failure
-   and this call that would change them. */
+/* Prints the full diagnostic for the recorded error: header, source
+   snippet, and call stack. Call it only after a top-level vm_run()
+   returned VM_RUNTIME_ERROR. It reads vm->frames, which nothing has
+   changed since the failure. */
 void vm_print_uncaught_error(vm_t *vm);
 
-/* Calls callee (an OBJ_FUNCTION/OBJ_CLOSURE/OBJ_NATIVE value, anything
-   OP_CALL itself could call) with arg_count values from args,
-   reentrantly: if callee is a paweli function/closure, this drives the
-   VM's own instruction loop until that one call returns, so it works
-   correctly no matter how deep the call nests or what it does (loops,
-   further calls, its own natives). Exposed so a native (in src/stdlib)
-   can call back into paweli code passed to it as a value, e.g. a sort
-   comparator.
+/* Calls callee with arg_count values from args. callee can be anything
+   OP_CALL can call. For a paweli function or closure this runs the
+   instruction loop until that call returns. A native uses it to call
+   back into paweli code, as stdlib.sort does with its comparator.
 
-   On success, *out_result holds callee's return value (or null, if it
-   had none) and this returns true. On failure (callee was not
-   actually callable, its argument count didn't match, or running it
-   hit a runtime error), this returns false with an error already
-   reported via vm_runtime_error(), same as a failed OP_CALL; *out_result
-   is left unset. Must only be called while vm is already mid-run (from
-   inside a native function's own body), never before vm_run() or after
-   it returns. */
+   On success *out_result holds the return value and this returns true.
+   On failure it returns false with the error already recorded, and
+   *out_result is not set. Call it only from inside a native, while the
+   vm is running. */
 bool vm_call_value(vm_t *vm, value_t callee, int arg_count, const value_t *args, value_t *out_result);
 
-/* Closes every open upvalue pointing at slot `last` or deeper. The
-   same operation OP_RETURN/OP_CLOSE_UPVALUE already perform inline in
-   run(), exposed as a plain C function so JIT-generated code
-   (src/jit/jit_compile.c) can call it directly for its own OP_RETURN
-   translation. */
+/* Closes every open upvalue that points at slot `last` or above it.
+   OP_RETURN and OP_CLOSE_UPVALUE do this inline in run(). This form is
+   for JIT code. */
 void vm_close_upvalues_from(vm_t *vm, value_t *last);
 
-/* Public wrappers around vm.c's own binary_op()/bitwise_op() static
-   helpers, for the same reason as vm_close_upvalues_from() above: pops
-   two values off vm's stack, applies op (an OP_EQUAL..OP_MODULO or
-   OP_BIT_AND..OP_SHIFT_RIGHT opcode byte), pushes the result. On
-   failure (wrong operand types, division/modulo by zero, an
-   out-of-range shift amount), reports the error via vm_runtime_error()
-   and returns false without pushing anything, same as a failed
-   interpreted OP_ADD/etc. */
+/* Wrappers around binary_op() and bitwise_op() for JIT code. Each pops
+   two values, applies the opcode, and pushes the result. On failure
+   (wrong operand types, division by zero, a shift amount out of range)
+   it records the error and returns false with nothing pushed. */
 bool vm_binary_op(vm_t *vm, uint8_t op);
 bool vm_bitwise_op(vm_t *vm, uint8_t op);
 
-/* The JIT translation of OP_CALL (src/jit/jit_compile.c): callee and
-   its arg_count arguments must already be sitting on vm's stack, same
-   precondition interpreted OP_CALL's own handler has. Reentrantly
-   drives the callee to completion regardless of whether it's a native,
-   an already-JIT-compiled paweli function/closure, or one that isn't
-   (yet). See vm_call_value()'s own comment for the general pattern.
-   On success, the result is left on vm's stack in place of the callee
-   and its arguments, exactly like a successful interpreted OP_CALL
-   leaves it; on failure, an error has already been reported via
-   vm_runtime_error() and nothing on the stack is unwound, same as a
-   failed interpreted OP_CALL. */
+/* The JIT's OP_CALL. The callee and its arg_count arguments must be on
+   the stack. It runs the callee to completion, whether it is a native,
+   a compiled function, or an interpreted one. On success the result
+   replaces the callee and arguments on the stack. On failure the error
+   is recorded and the stack is left as it is. */
 bool vm_jit_call(vm_t *vm, int arg_count);
 
-/* Shared indexing logic behind OP_GET_INDEX/OP_SET_INDEX, extracted out
-   of run()'s own switch cases so the interpreter and JIT-generated code
-   (src/jit/jit_compile.c) share identical semantics. On success writes
-   the result through out_result and returns true; on failure an error
-   is already reported via vm_runtime_error() and this returns false,
-   same convention as vm_binary_op()/vm_bitwise_op(). vm_get_index() can
-   allocate (a single-character string result from indexing a string).
-   It is a real GC safepoint; vm_set_index() never allocates. */
+/* The indexing logic behind OP_GET_INDEX and OP_SET_INDEX, shared by
+   the interpreter and JIT code. On success the result goes to
+   out_result. On failure the error is recorded and the function
+   returns false. vm_get_index() can allocate, since indexing a string
+   builds a string, so it is a GC safepoint. vm_set_index() never
+   allocates. */
 bool vm_get_index(vm_t *vm, value_t container, value_t index_value, value_t *out_result);
 bool vm_set_index(vm_t *vm, value_t container, value_t index_value, value_t value, value_t *out_result);
 
-/* Public wrapper around vm.c's own static capture_upvalue(), for
-   JIT-generated code (see vm_make_closure() below). */
+/* A wrapper around capture_upvalue() for JIT code. */
 obj_upvalue_t *vm_capture_upvalue(vm_t *vm, value_t *local);
 
-/* Shared behind OP_CLOSURE and its JIT translation. See vm.c's own
-   comment on this function for the full contract. Never fails
-   (is_local/index in descriptors are always compile-time-valid). */
+/* The logic behind OP_CLOSURE, shared with JIT code. Never fails. */
 value_t vm_make_closure(vm_t *vm, call_frame_t *frame, obj_function_t *function, const uint8_t *descriptors, uint8_t upvalue_count);
 
-/* Shared behind OP_GET_PROPERTY and its JIT translation, same
-   convention as vm_get_index()/vm_set_index() above. Never allocates. */
+/* The logic behind OP_GET_PROPERTY, shared with JIT code. Never
+   allocates. */
 bool vm_get_property(vm_t *vm, obj_string_t *name, value_t object, value_t *out_result);
 
-/* Shared behind OP_TRY_CALL and its JIT translation. See vm.c's own
-   comment on this function for the full contract. Returns true on
-   success (result pushed), false on failure (error message pushed in
-   its place); the caller decides whether to fall through or jump to
-   the catch handler based on that. Can allocate on the failure path
-   (the error-message string). It is a real GC safepoint. */
+/* The logic behind OP_TRY_CALL, shared with JIT code. Returns true
+   with the result pushed, or false with the error message pushed. The
+   failure path allocates the message string, so this is a GC
+   safepoint. */
 bool vm_try_call(vm_t *vm);

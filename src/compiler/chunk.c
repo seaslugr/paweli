@@ -92,9 +92,8 @@ static size_t disassemble_jump(const chunk_t *chunk, const char *name, int sign,
 	return offset + 3;
 }
 
-/* OP_STRUCT's layout: opcode, a constant-pool index (the type name), then
-   a plain byte (the field count), the same two-part shape as
-   emit_name_op_str() + a following emit_byte() in the compiler. */
+/* OP_STRUCT: the opcode, a constant-pool index for the type name, then
+   one byte for the field count. */
 static size_t disassemble_constant_and_byte(const chunk_t *chunk, const char *name, size_t offset, FILE *out) {
 	uint16_t index;
 	uint8_t count;
@@ -107,10 +106,9 @@ static size_t disassemble_constant_and_byte(const chunk_t *chunk, const char *na
 	return offset + 4;
 }
 
-/* OP_CLOSURE is the only variable-length instruction in this format: a
-   constant index, an upvalue count, then that many (is_local, index)
-   byte pairs, one per upvalue descriptor. See chunk.h's own comment
-   on OP_CLOSURE for what each pair means. */
+/* OP_CLOSURE is the only variable-length instruction: a constant
+   index, an upvalue count, then one (is_local, index) byte pair per
+   upvalue. See OP_CLOSURE in chunk.h. */
 static size_t disassemble_closure(const chunk_t *chunk, size_t offset, FILE *out) {
 	uint16_t const_index;
 	uint8_t upvalue_count;

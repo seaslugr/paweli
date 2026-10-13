@@ -6,6 +6,7 @@ src = "src"
 language = "en"
 
 [output.html]
+site-url = "/paweli/"
 git-repository-url = "https://github.com/seaslugr/paweli"
 edit-url-template = "https://github.com/seaslugr/paweli/edit/main/book/{path}"
 default-theme = "paweli"

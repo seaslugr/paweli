@@ -3,9 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Register numbers match the x86-64 encoding directly (0-15), so a
-// caller can pass one straight into ModRM/SIB/opcode-extension math
-// without a lookup table.
+// Register numbers are the x86-64 encoding (0-15), so they go straight
+// into ModRM and REX math.
 typedef enum {
 	JIT_RAX = 0,
 	JIT_RCX = 1,
@@ -25,15 +24,9 @@ typedef enum {
 	JIT_R15 = 15,
 } jit_reg_t;
 
-// Same physical 0-15 numbering as jit_reg_t, but a distinct type since
-// an XMM register number is never interchangeable with a GPR one.
-// It is used only for the scalar-double (SSE2) primitives below. XMM0/XMM1
-// are the only values this file's callers ever actually pass today
-// (pure transient scratch within a single opcode's own codegen; unlike
-// the GPR file, nothing in this JIT ever holds a live XMM value across
-// a call or an opcode boundary, so there is no XMM analogue of R2a's
-// spill/reload machinery to worry about), but the encoder itself
-// supports all 16 the same way the GPR encoder already does.
+// Same 0-15 numbering as jit_reg_t, as a separate type so an XMM
+// register is never passed as a GPR. The JIT only uses xmm0 and xmm1,
+// as scratch inside one opcode. No XMM value lives across a call.
 typedef enum {
 	JIT_XMM0 = 0,
 	JIT_XMM1 = 1,
@@ -67,9 +60,8 @@ typedef enum {
 	JIT_CC_G = 0x8F,
 } jit_cc_t;
 
-// A growable machine-code buffer, same realloc-doubling shape as
-// chunk_t's own bytecode buffer. Pure x86-64 encoding lives here; this
-// file has no knowledge of paweli bytecode or runtime layout.
+// A growable machine-code buffer. This file only knows x86-64
+// encoding. It knows nothing about paweli bytecode or runtime layout.
 typedef struct {
 	uint8_t *code;
 	size_t count;
@@ -104,7 +96,7 @@ void jit_emit_xor_reg_reg(jit_asm_t *a, jit_reg_t dst, jit_reg_t src);
 /* dst = dst * imm (64-bit, three-operand). */
 void jit_emit_imul_reg_reg_imm32(jit_asm_t *a, jit_reg_t dst, jit_reg_t src, int32_t imm);
 
-/* Sets flags from a_reg - b_reg / a_reg & b_reg; neither operand is written. */
+/* Sets flags from a_reg - b_reg, or a_reg & b_reg. Neither operand is written. */
 void jit_emit_cmp_reg_reg(jit_asm_t *a, jit_reg_t a_reg, jit_reg_t b_reg);
 void jit_emit_test_reg_reg(jit_asm_t *a, jit_reg_t a_reg, jit_reg_t b_reg);
 
@@ -119,19 +111,19 @@ void jit_emit_not_reg(jit_asm_t *a, jit_reg_t reg);
 
 /* dst = (uint8_t)[base + disp], zero-extended. */
 void jit_emit_movzx8_reg_mem(jit_asm_t *a, jit_reg_t dst, jit_reg_t base, int32_t disp);
-/* dst = (uint8_t)src, zero-extended (both full registers; only src's low byte is read). */
+/* dst = (uint8_t)src, zero-extended. Only the low byte of src is read. */
 void jit_emit_movzx8_reg_reg(jit_asm_t *a, jit_reg_t dst, jit_reg_t src);
-/* Sets reg's low byte to 1 if cc holds, else 0 (upper bytes of reg are
-   left untouched. Pair with jit_emit_movzx8_reg_reg(reg, reg) to get
-   a clean 0/1 value in the full register). */
+/* Sets the low byte of reg to 1 if cc holds, else 0. The upper bytes
+   keep their old value. Follow with jit_emit_movzx8_reg_reg(reg, reg)
+   for a clean 0 or 1. */
 void jit_emit_setcc_reg8(jit_asm_t *a, jit_cc_t cc, jit_reg_t reg);
 
 /* Sign-extends rax into rdx:rax, as idiv's dividend setup requires. */
 void jit_emit_cqo(jit_asm_t *a);
 /* Signed-divides rdx:rax by reg; quotient in rax, remainder in rdx. */
 void jit_emit_idiv_reg(jit_asm_t *a, jit_reg_t reg);
-/* dst <<= cl / dst = arithmetic dst >> cl (shift amount is always the
-   implicit CL register, per the x86-64 encoding). */
+/* dst <<= cl, and dst = dst >> cl (arithmetic). x86-64 always takes the
+   shift amount from cl. */
 void jit_emit_shl_reg_cl(jit_asm_t *a, jit_reg_t dst);
 void jit_emit_sar_reg_cl(jit_asm_t *a, jit_reg_t dst);
 
@@ -146,25 +138,20 @@ void jit_emit_subsd_reg_reg(jit_asm_t *a, jit_xmm_reg_t dst, jit_xmm_reg_t src);
 void jit_emit_mulsd_reg_reg(jit_asm_t *a, jit_xmm_reg_t dst, jit_xmm_reg_t src);
 void jit_emit_divsd_reg_reg(jit_asm_t *a, jit_xmm_reg_t dst, jit_xmm_reg_t src);
 
-/* Sets flags from a_reg - b_reg as an IEEE-754 unordered compare (66 0F
-   2E /r. Mandatory prefix 66, not F2, unlike every other primitive
-   here). ZF=PF=CF=1 if either operand is NaN; neither operand is
-   written. Pair with the reversed-operand jit_emit_setcc_reg8() pattern
-   documented at each JIT call site for correct NaN-is-false semantics
-   on <, <=, >, >=. */
+/* Sets flags from a_reg - b_reg as an IEEE-754 unordered compare
+   (66 0F 2E /r). ZF, PF, and CF are all 1 if either operand is NaN.
+   Neither operand is written. */
 void jit_emit_ucomisd_reg_reg(jit_asm_t *a, jit_xmm_reg_t a_reg, jit_xmm_reg_t b_reg);
 
 void jit_emit_push_reg(jit_asm_t *a, jit_reg_t reg);
 void jit_emit_pop_reg(jit_asm_t *a, jit_reg_t reg);
 void jit_emit_ret(jit_asm_t *a);
-/* Calls the address held in reg (an absolute address, e.g. loaded via
-   jit_emit_mov_reg_imm64 with a C function pointer). */
+/* Calls the absolute address held in reg. */
 void jit_emit_call_reg(jit_asm_t *a, jit_reg_t reg);
 
-/* Emits an unconditional/conditional jump with a placeholder rel32,
-   returning the byte offset of that rel32 for a later
-   jit_patch_rel32() call once the target's real offset is known.
-   This is the machine-code-level equivalent of compiler.c's patch_jump(). */
+/* Emits a jump with a placeholder rel32 and returns the byte offset of
+   that rel32. Pass it to jit_patch_rel32() once the target offset is
+   known. */
 size_t jit_emit_jmp(jit_asm_t *a);
 size_t jit_emit_jcc(jit_asm_t *a, jit_cc_t cc);
 void jit_patch_rel32(jit_asm_t *a, size_t patch_site, size_t target_offset);

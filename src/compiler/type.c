@@ -9,17 +9,10 @@
 #define TYPE_STRING_BUFFERS 8
 #define TYPE_STRING_BUFFER_SIZE 96
 
-// Every func_type_t built while resolving a type_ref_t (a var_decl's
-// declared type, a parameter, a struct field, a return type; anywhere
-// a `fn(...) -> T` annotation can appear) is tracked here instead of by
-// whichever compiler_t happened to be resolving it at the time. A
-// per-compiler_t lifetime (which is all a nested fn's own self-type
-// ever needed) stops being enough once a function-typed *exported
-// function signature* can reference one: that has to survive into
-// module_unit_t.exports, which outlives the compiling compiler_t
-// entirely. Process-lifetime, freed once via type_shutdown() (called
-// from compiler_shutdown()), matches how the native signature tables
-// already handle the same "outlives any one compile" requirement.
+// Every func_type_t is tracked in this list and lives for the whole
+// process. An exported function signature can hold one, and it must
+// outlive the compiler_t that built it. type_shutdown() frees the
+// list.
 typedef struct func_type_node {
 	func_type_t *func_type;
 	struct func_type_node *next;
@@ -28,7 +21,7 @@ typedef struct func_type_node {
 static func_type_node_t *g_func_types = NULL;
 
 static const char *type_kind_name(type_kind_t kind);
-static func_type_t *alloc_func_type(void);
+static func_type_t *alloc_func_type();
 static size_t type_string_append(char *buffer, size_t buffer_size, size_t offset, const char *text, int length);
 static size_t append_type_string(char *buffer, size_t buffer_size, size_t offset, type_t type);
 static size_t append_func_type_string(char *buffer, size_t buffer_size, size_t offset, const func_type_t *ft);
@@ -47,7 +40,7 @@ static const char *type_kind_name(type_kind_t kind) {
 	return "?";
 }
 
-static func_type_t *alloc_func_type(void) {
+static func_type_t *alloc_func_type() {
 	func_type_t *ft;
 	func_type_node_t *node;
 
@@ -60,7 +53,7 @@ static func_type_t *alloc_func_type(void) {
 	return ft;
 }
 
-void type_shutdown(void) {
+void type_shutdown() {
 	func_type_node_t *node;
 	func_type_node_t *next;
 
@@ -75,11 +68,9 @@ void type_shutdown(void) {
 	g_func_types = NULL;
 }
 
-/* TYPE_STRUCT equality is nominal (pointer identity: two struct types are
-   the same iff they came from the same declaration). TYPE_FUNCTION is
-   structural instead: it matches "any function with this shape", since a
-   function type is never declared anywhere, only ever spelled out
-   wherever it's used (a param, a var_decl, a return type). */
+/* TYPE_STRUCT equality is nominal: the same declaration. TYPE_FUNCTION
+   equality is structural: the same shape. A function type has no
+   declaration. It is spelled out wherever it is used. */
 static bool func_type_equals(const func_type_t *a, const func_type_t *b) {
 	size_t i;
 
@@ -121,7 +112,7 @@ bool type_is_assignable(type_t target, type_t value) {
 	return type_equals(target, value);
 }
 
-type_t type_int(void) {
+type_t type_int() {
 	type_t type;
 	type.kind = TYPE_INT;
 	type.array_depth = 0;
@@ -130,7 +121,7 @@ type_t type_int(void) {
 	return type;
 }
 
-type_t type_float(void) {
+type_t type_float() {
 	type_t type;
 	type.kind = TYPE_FLOAT;
 	type.array_depth = 0;
@@ -139,7 +130,7 @@ type_t type_float(void) {
 	return type;
 }
 
-type_t type_string(void) {
+type_t type_string() {
 	type_t type;
 	type.kind = TYPE_STRING;
 	type.array_depth = 0;
@@ -148,7 +139,7 @@ type_t type_string(void) {
 	return type;
 }
 
-type_t type_bool(void) {
+type_t type_bool() {
 	type_t type;
 	type.kind = TYPE_BOOL;
 	type.array_depth = 0;
@@ -157,7 +148,7 @@ type_t type_bool(void) {
 	return type;
 }
 
-type_t type_void(void) {
+type_t type_void() {
 	type_t type;
 	type.kind = TYPE_VOID;
 	type.array_depth = 0;
@@ -166,7 +157,7 @@ type_t type_void(void) {
 	return type;
 }
 
-type_t type_null(void) {
+type_t type_null() {
 	type_t type;
 	type.kind = TYPE_NULL;
 	type.array_depth = 0;
@@ -205,19 +196,14 @@ type_t type_element_of(type_t array) {
 	return array;
 }
 
-func_type_t *type_new_func_type(void) {
+func_type_t *type_new_func_type() {
 	return alloc_func_type();
 }
 
-/* Appends text (length characters, or the whole NUL-terminated string if
-   length is negative; struct/field names are spans into source text,
-   never NUL-terminated at their own end, so they always pass an explicit
-   length; plain C-string literals pass -1 for convenience) at offset,
-   clamped to never write past buffer_size. Returns the new offset, so a
-   caller can thread a sequence of appends through it. This is a
-   diagnostic-only formatting helper, so silent truncation on a
-   pathologically long signature is an acceptable outcome; it does not
-   need a real error path. */
+/* Appends text at offset and returns the new offset. A negative length
+   means text is NUL-terminated. Names from source text are spans and
+   pass an explicit length. Writes never pass buffer_size. A very long
+   signature is cut short, which is fine for a diagnostic. */
 static size_t type_string_append(char *buffer, size_t buffer_size, size_t offset, const char *text, int length) {
 	int written;
 
@@ -290,9 +276,7 @@ void struct_registry_free(struct_registry_t *registry) {
 
 	for (i = 0; i < registry->count; i++) {
 		free(registry->defs[i]->fields);
-		// namespace_obj is deliberately left alone: it's a GC-heap object,
-		// freed by the heap's own sweep/gc_free_all(), not owned by this
-		// registry.
+		// namespace_obj is a GC-heap object. The heap frees it.
 		signature_table_free(registry->defs[i]->methods);
 		free(registry->defs[i]->methods);
 		free(registry->defs[i]);
@@ -389,14 +373,10 @@ type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs,
 				type.struct_def = def;
 				return type;
 			}
-			// A local match always wins outright (handled above); with
-			// none, every imported module's exports is checked, since an
-			// unqualified struct name is no longer guaranteed to come
-			// from at most one import now that transitive/multi-import
-			// resolution exists. Two different imports exporting the
-			// same struct name is ambiguous, not "first one wins": there
-			// is no principled ordering between two #module lines that
-			// would make picking one silently correct.
+			// A local match wins (handled above). With none, check the exports of
+			// every imported module. Two imports that export the same struct name
+			// are ambiguous. No order between #module lines would make one of
+			// them the right choice.
 			match_count = 0;
 			match = NULL;
 			for (i = 0; i < imported_module_count; i++) {
@@ -419,13 +399,8 @@ type_t type_from_type_ref(type_ref_t type_ref, const struct_registry_t *structs,
 			}
 			break;
 		case TOKEN_FN:
-			// Recursively resolved (a function type's own param/return
-			// types can themselves be function types, e.g. a factory
-			// returning a factory) against the same structs/
-			// imported_modules, and tracked process-lifetime rather than
-			// by any one compiler_t; see alloc_func_type()'s own
-			// comment for why a nested fn's self-type never needed that,
-			// but a function-typed annotation in general does.
+			// Resolved recursively, since a function type's parameter and return
+			// types can be function types.
 			ft = alloc_func_type();
 			ft->param_count = type_ref.function_ref->param_count;
 			ft->param_types = ft->param_count > 0 ? malloc(ft->param_count * sizeof(type_t)) : NULL;

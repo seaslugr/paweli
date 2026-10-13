@@ -1,28 +1,23 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include <errno.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "cli.h"
 #include "compiler/compiler.h"
-#include "compiler/paw.h"
+#include "paw/paw.h"
 #include "exec.h"
 #include "output.h"
-#include "platform/exe.h"
+#include "platform/platform.h"
 #include "project/manifest.h"
 #include "runtime/module.h"
 #include "runtime/object.h"
 #include "runtime/table.h"
 #include "runtime/vm.h"
 
-// Long-option codes for the two getopt_long() tables below. Values
-// start past the ASCII range so they never collide with a short
-// option (neither table below defines any, but getopt_long still
-// wants distinct case labels).
+// Long-option codes for the getopt_long() tables below. They start
+// past the ASCII range so they cannot collide with a short option.
 typedef enum {
 	OPT_DUMP_AST = 1000,
 	OPT_DUMP_BYTECODE,
@@ -34,9 +29,9 @@ typedef enum {
 	OPT_STRIP_SOURCE,
 } cli_long_opt_t;
 
-// Shared by cli_run_command() and cli_run_embedded_command(): both
-// accept the same run-time flags, they just react to --dump-ast and
-// --run-tests differently (see each function).
+// Shared by cli_run_command() and cli_run_embedded_command(). Both
+// accept the same run flags and differ in how they treat --dump-ast
+// and --run-tests.
 static const struct option run_long_opts[] = {
 	{"dump-ast", no_argument, NULL, OPT_DUMP_AST},
 	{"dump-bytecode", no_argument, NULL, OPT_DUMP_BYTECODE},
@@ -56,7 +51,7 @@ static const struct option build_long_opts[] = {
 
 static bool parse_long_flag_value(const char *flag_name, const char *text, long min_value, long *out_value);
 static char *default_paw_output_path(const char *input_path);
-static bool ensure_project_build_dir(void);
+static bool ensure_project_build_dir();
 static char *project_build_output_path(const char *name, const char *suffix);
 
 static bool parse_long_flag_value(const char *flag_name, const char *text, long min_value, long *out_value) {
@@ -89,17 +84,36 @@ static char *default_paw_output_path(const char *input_path) {
 	return out;
 }
 
-/* Creates the "build" directory a project-mode build() writes into,
-   tolerating it already existing. Only ever called from
-   cli_build_command() when reading its input from a manifest (see
-   PROJECT_MANIFEST_FILENAME); a filename-argument build never touches
-   this. */
-static bool ensure_project_build_dir(void) {
-	if (mkdir("build", 0755) == 0 || errno == EEXIST) {
+/* Creates the "build" directory for a project-mode build. It is fine
+   if the directory already exists. */
+static bool ensure_project_build_dir() {
+	if (platform_make_dir("build")) {
 		return true;
 	}
 	print_error("could not create 'build' directory: %s", strerror(errno));
 	return false;
+}
+
+/* Returns a malloc'd copy of name with the platform's executable
+   suffix added, unless name already ends with it. */
+static char *exe_output_path(const char *name) {
+	const char *suffix;
+	size_t name_length;
+	size_t suffix_length;
+	char *out;
+
+	suffix = platform_exe_suffix();
+	name_length = strlen(name);
+	suffix_length = strlen(suffix);
+	if (name_length >= suffix_length && strcmp(name + name_length - suffix_length, suffix) == 0) {
+		suffix_length = 0;
+	}
+
+	out = malloc(name_length + suffix_length + 1);
+	memcpy(out, name, name_length);
+	memcpy(out + name_length, suffix, suffix_length);
+	out[name_length + suffix_length] = '\0';
+	return out;
 }
 
 static char *project_build_output_path(const char *name, const char *suffix) {
@@ -112,16 +126,11 @@ static char *project_build_output_path(const char *name, const char *suffix) {
 	return out;
 }
 
-/* Flag parsing for a self-extracting executable's own invocation
-   (./myprogram [flags]): the same run flags cli_run_command() accepts,
-   minus --dump-ast/test mode (which apply only to compiling from
-   source, and to which program's tests run; both are already fixed by
-   the time this executable was built) and minus a file argument
-   (there is nothing to name; the program is this executable). Either
-   of the first two is accepted anyway, with a warning, matching how
-   cli_run_command() already treats them for a plain .paw file; anything
-   else non-flag is a hard error, since there is no positional
-   argument this command line could sensibly mean. */
+/* Parses the flags of a self-extracting executable (./myprogram
+   [flags]). They are the run flags of cli_run_command(), with no file
+   argument. --dump-ast and --run-tests were fixed when the executable
+   was built, so each is accepted with a warning. Any other argument
+   that is not a flag is an error. */
 int cli_run_embedded_command(const char *exe_path, uint64_t offset, uint64_t size, int argc, char **argv) {
 	bool dump_bytecode = false;
 	bool jit_stats = false;
@@ -167,17 +176,11 @@ int cli_run_embedded_command(const char *exe_path, uint64_t offset, uint64_t siz
 	return exec_run_embedded(exe_path, offset, size, dump_bytecode, jit_stats, stack_size, max_frames);
 }
 
-/* Shared by three entry points: the bare `paweli <file>` fallback
-   (allow_project_fallback=false, force_run_tests=false, called with
-   the original unshifted argc/argv, same as always), `paweli run`
-   (allow_project_fallback=true, force_run_tests=false), and
-   `paweli test` (allow_project_fallback=true, force_run_tests=true;
-   its whole difference from `run` is this one bool, both otherwise
-   identical). `--run-tests` is no longer a recognized flag anywhere:
-   it always errors, directing to `paweli test`, the flag's full
-   replacement for every case a run-time flag could express (baking
-   test mode into a *compiled* artifact is a different, still-needed
-   capability and stays exactly as `paweli build --run-tests` today). */
+/* Three entry points share this: the bare `paweli <file>`
+   (allow_project_fallback false), `paweli run`, and `paweli test`
+   (force_run_tests true). --run-tests is not a run flag. It gives an
+   error that points to `paweli test`. `paweli build --run-tests` is
+   separate and bakes test mode into the output. */
 int cli_run_command(int argc, char **argv, bool allow_project_fallback, bool force_run_tests) {
 	bool dump_ast = false;
 	bool dump_bytecode = false;
@@ -223,9 +226,7 @@ int cli_run_command(int argc, char **argv, bool allow_project_fallback, bool for
 		}
 	}
 
-	// Same last-one-wins behavior a strcmp loop taking `path = argv[i]`
-	// on every non-flag argument had: `paweli run a.pw b.pw` silently
-	// runs b.pw. Not this refactor's problem to fix.
+	// The last filename wins: `paweli run a.pw b.pw` runs b.pw.
 	for (i = optind; i < argc; i++) {
 		path = argv[i];
 	}
@@ -351,14 +352,11 @@ int cli_build_command(int argc, char **argv) {
 
 	input_path = positional[0];
 	if (input_path == NULL) {
-		// No filename argument: fall back to project mode, reading the
-		// entry point from PROJECT_MANIFEST_FILENAME in the current
-		// directory instead. project_manifest_exists() (silent) is
-		// checked first so "no file arg, no project here either" still
-		// prints the plain usage message below, rather than a confusing
-		// "could not open project.pawproj" for what's just an ordinary
-		// missing-argument mistake; project_manifest_read() prints its
-		// own diagnostic if the manifest exists but is actually broken.
+		// No filename: use project mode and read the entry file from the
+		// manifest in the current directory. project_manifest_exists() is
+		// checked first, so a plain missing argument still gets the usage
+		// message. project_manifest_read() prints its own error for a broken
+		// manifest.
 		if (!project_manifest_exists(PROJECT_MANIFEST_FILENAME)) {
 			fprintf(stderr, "usage: paweli build <file.pw> [output.paw] [--strip-source] [--run-tests]\n       paweli build <file.pw> --bin <name> [--strip-source] [--run-tests]\n       paweli build [--bin <name>] [--strip-source] [--run-tests]  (reads " PROJECT_MANIFEST_FILENAME " in the current directory)\n");
 			return 1;
@@ -382,19 +380,27 @@ int cli_build_command(int argc, char **argv) {
 		output_path = positional[1];
 	}
 
-	// Project-mode output always lands under build/, named after the
-	// manifest (or, for --bin, the name given to it), instead of next to
-	// the source the way a filename-argument build always has. A
-	// filename-argument build's output location is completely
-	// unaffected: this only ever runs when from_manifest is true.
+	// Project-mode output goes under build/, named after the manifest, or
+	// after the --bin name. A build with a filename argument writes next
+	// to the source.
 	if (from_manifest) {
 		if (!ensure_project_build_dir()) {
 			project_manifest_free(&manifest);
 			return 1;
 		}
-		owned_output_path = want_exe ? project_build_output_path(output_path, "") : project_build_output_path(manifest.name, ".paw");
+		if (want_exe) {
+			char *exe_name = exe_output_path(output_path);
+
+			owned_output_path = project_build_output_path(exe_name, "");
+			free(exe_name);
+		} else {
+			owned_output_path = project_build_output_path(manifest.name, ".paw");
+		}
 		output_path = owned_output_path;
-	} else if (!want_exe && output_path == NULL) {
+	} else if (want_exe) {
+		owned_output_path = exe_output_path(output_path);
+		output_path = owned_output_path;
+	} else if (output_path == NULL) {
 		owned_output_path = default_paw_output_path(input_path);
 		output_path = owned_output_path;
 	}
@@ -417,14 +423,10 @@ int cli_build_command(int argc, char **argv) {
 
 	ok = script != NULL;
 	if (ok) {
-		// resolver.compiled_units is every module the program
-		// transitively depends on, already deduplicated (a diamond
-		// import appears once) and in dependency order; vm.owned_sources
-		// holds exactly the matching filename/source for each one, in
-		// the same order, since module_compile() calls
-		// vm_track_owned_source() exactly once per canonical module,
-		// right where it also adds that module to the resolver (see
-		// module.c), and never for an alias.
+		// resolver.compiled_units is every module the program depends on,
+		// deduplicated and in dependency order. vm.owned_sources has the
+		// filename and source of each one in the same order, since
+		// module_compile() registers both once per canonical module.
 		module_infos = resolver.compiled_count > 0 ? malloc(resolver.compiled_count * sizeof(paw_module_info_t)) : NULL;
 		for (module_index = 0; module_index < resolver.compiled_count; module_index++) {
 			module_infos[module_index].module_obj = resolver.compiled_units[module_index]->module_obj;
@@ -433,14 +435,11 @@ int cli_build_command(int argc, char **argv) {
 			module_infos[module_index].source = vm.owned_sources[module_index].source;
 		}
 
-		// The whole #module import graph, as a flat edge list: the entry
-		// file's own direct imports (importer_index 0), then every
-		// module's own imports (importer_index = 1 + its own position in
-		// resolver.compiled_units). module_unit_canonical() normalizes an
-		// edge target that happens to be an alias (an importer used a
-		// different name/path string than whichever importer first
-		// resolved that file) back to the one canonical unit that
-		// actually has a slot in module_infos.
+		// The #module import graph as a flat edge list: the entry file's
+		// imports (importer_index 0), then each module's imports
+		// (importer_index 1 + its position in resolver.compiled_units).
+		// module_unit_canonical() maps an alias target back to the unit that
+		// has a slot in module_infos.
 		edges = NULL;
 		edge_count = 0;
 		edge_capacity = 0;
@@ -499,13 +498,10 @@ int cli_build_command(int argc, char **argv) {
 	return ok ? 0 : 1;
 }
 
-/* paweli init [name]: with no name, scaffolds PROJECT_MANIFEST_FILENAME
-   and a starter main.pw directly in the current directory. With a
-   name, creates a new directory of that name first (tolerating it
-   already existing, same as ensure_project_build_dir() does for build/) and
-   scaffolds inside that instead, so `paweli init myapp` needs no
-   separate mkdir/cd step. See project_init() (src/project/manifest.c)
-   for exactly what gets written. */
+/* `paweli init [name]`. With no name it scaffolds the manifest and a
+   starter main.pw in the current directory. With a name it creates
+   that directory first and scaffolds inside it. See project_init() for
+   what is written. */
 int cli_init_command(int argc, char **argv) {
 	const char *name;
 	int i;
@@ -520,7 +516,7 @@ int cli_init_command(int argc, char **argv) {
 	}
 
 	if (name != NULL) {
-		if (mkdir(name, 0755) != 0 && errno != EEXIST) {
+		if (!platform_make_dir(name)) {
 			print_error("could not create directory '%s': %s", name, strerror(errno));
 			return 1;
 		}

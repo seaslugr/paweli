@@ -1,12 +1,8 @@
-#define _POSIX_C_SOURCE 200809L
-
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <unistd.h>
 
+#include "platform/platform.h"
 #include "stdlib.h"
 
 static bool native_print(vm_t *vm, int arg_count, value_t *args, value_t *out_result);
@@ -17,7 +13,7 @@ static bool native_test_output_suppress_end(vm_t *vm, int arg_count, value_t *ar
 static bool native_test_report_pass(vm_t *vm, int arg_count, value_t *args, value_t *out_result);
 static bool native_test_report_failure(vm_t *vm, int arg_count, value_t *args, value_t *out_result);
 static bool native_test_report_summary(vm_t *vm, int arg_count, value_t *args, value_t *out_result);
-static bool test_output_is_tty(void);
+static bool test_output_is_tty();
 static void register_global(vm_t *vm, table_t *globals, const char *name, native_fn_t function);
 
 static bool native_print(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
@@ -29,11 +25,9 @@ static bool native_print(vm_t *vm, int arg_count, value_t *args, value_t *out_re
 	return true;
 }
 
-/* assert(condition) or assert(condition, message). condition uses the
-   same truthiness rules as if/while: only null and false are falsey.
-   A failing assertion is a runtime error. That is what makes a test
-   file self-checking. It exits nonzero exactly when an assertion turns
-   out false, with no external expected-output file needed. */
+/* assert(condition) or assert(condition, message). Only null and false
+   are falsey. A failed assertion is a runtime error, so a test file
+   exits nonzero exactly when an assertion fails. */
 static bool native_assert(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	obj_string_t *message;
 
@@ -56,33 +50,24 @@ static bool native_assert(vm_t *vm, int arg_count, value_t *args, value_t *out_r
 	return true;
 }
 
-/* Whether --run-tests' progress reporting should overwrite one line in
-   place (a real terminal) or fall back to one static line per test (a
-   pipe/redirect, or output captured to a file): the same call site that
-   printed "running: NAME" per test before scripts/run_tests.sh existed,
-   and still does when stdout isn't a tty, since that script greps
-   captured output for exactly that line to catch a test category
-   silently missing from main.pw. Checked once and cached: stdout either
-   is or isn't a terminal for this process's whole lifetime. */
-static bool test_output_is_tty(void) {
+/* True if test progress can redraw one line in place. On a pipe or
+   file each test gets its own plain line. scripts/run_tests.sh counts
+   those lines. Checked once and cached. */
+static bool test_output_is_tty() {
 	static bool checked = false;
 	static bool is_tty = false;
 
 	if (!checked) {
-		is_tty = isatty(fileno(stdout)) != 0;
+		is_tty = platform_stream_is_tty(stdout);
 		checked = true;
 	}
 	return is_tty;
 }
 
-/* Dev-only pacing knob, same idea as PAWELI_GC_STRESS/PAWELI_JIT_THRESHOLD
-   elsewhere in this codebase: unset, --run-tests runs at full speed (the
-   only thing that matters for CI/scripts/run_tests.sh); set to a
-   millisecond count, native_test_report_pass()/_failure() below each
-   pause that long right after printing, purely so a human watching a
-   real terminal can actually see the live progress line move instead of
-   the whole suite finishing before it's readable. */
-static long test_step_delay_ms(void) {
+/* A development knob. With PAWELI_TEST_STEP_DELAY_MS set to a number
+   of milliseconds, the runner pauses that long per test, so a person
+   can watch the progress line. Unset, tests run at full speed. */
+static long test_step_delay_ms() {
 	static bool checked = false;
 	static long ms = 0;
 	const char *env;
@@ -95,52 +80,32 @@ static long test_step_delay_ms(void) {
 	return ms;
 }
 
-static void test_step_sleep(void) {
-	long ms;
-	struct timespec ts;
+static void test_step_sleep() {
+	long ms = test_step_delay_ms();
 
-	ms = test_step_delay_ms();
-	if (ms <= 0) {
-		return;
+	if (ms > 0) {
+		platform_sleep_ms(ms);
 	}
-	ts.tv_sec = ms / 1000;
-	ts.tv_nsec = (ms % 1000) * 1000000L;
-	nanosleep(&ts, NULL);
 }
 
-/* fd 1's saved copy while a test's own stdout is redirected to
-   /dev/null (native_test_output_suppress_begin()/_end() below), so it
-   can be restored exactly. -1 whenever nothing is currently suppressed:
-   both the initial state and, defensively, once restored. There is
-   only ever one @test running at a time -- run_tests_mode never nests
-   or parallelizes tests -- so one process-wide slot is enough. */
-static int g_test_output_saved_fd = -1;
+// The saved stdout while a test's output is suppressed, or
+// PLATFORM_NO_SAVED_STDOUT. Only one @test runs at a time, so one slot
+// is enough.
+static int g_test_output_saved_fd = PLATFORM_NO_SAVED_STDOUT;
 
-/* $test_output_suppress_begin()/$test_output_suppress_end(): bracket
-   every @test call (see compiler.c's emit_test_runner()) so a test that
-   prints -- e.g. tests/suite/basic.pw's test_print(), which exists
-   purely to prove print() works at all -- doesn't interleave its output
-   with the [OK]/[FAIL] report line or the live progress line's
-   in-place \r redraw. Redirecting the real fd 1 (not just swapping
-   `stdout`'s FILE*) is what makes this transparent to native_print()
-   and anything else already holding a `stdout` reference. Unconditional
-   in both tty and non-tty mode: a piped/logged run benefits from the
-   quiet output exactly the same way a live terminal does. */
+/* $test_output_suppress_begin() and $test_output_suppress_end() go
+   around every @test call (see compiler_emit_test_runner()). A test
+   that prints would mix its output into the [OK]/[FAIL] line and the
+   progress line. The real stdout is redirected, so print() and
+   anything else that holds `stdout` are covered. */
 static bool native_test_output_suppress_begin(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
-	int devnull_fd;
-
 	(void)args;
 	if (!stdlib_check_arity(vm, "$test_output_suppress_begin", arg_count, 0)) {
 		return false;
 	}
 
 	fflush(stdout);
-	devnull_fd = open("/dev/null", O_WRONLY);
-	if (devnull_fd != -1) {
-		g_test_output_saved_fd = dup(STDOUT_FILENO);
-		dup2(devnull_fd, STDOUT_FILENO);
-		close(devnull_fd);
-	}
+	g_test_output_saved_fd = platform_stdout_suppress();
 
 	*out_result = value_null();
 	return true;
@@ -153,32 +118,19 @@ static bool native_test_output_suppress_end(vm_t *vm, int arg_count, value_t *ar
 	}
 
 	fflush(stdout);
-	if (g_test_output_saved_fd != -1) {
-		dup2(g_test_output_saved_fd, STDOUT_FILENO);
-		close(g_test_output_saved_fd);
-		g_test_output_saved_fd = -1;
-	}
+	platform_stdout_restore(g_test_output_saved_fd);
+	g_test_output_saved_fd = PLATFORM_NO_SAVED_STDOUT;
 
 	*out_result = value_null();
 	return true;
 }
 
-/* $test_progress(current, total, name): a live "what's running right
-   now" line, redrawn in place before each @test call -- only on a real
-   terminal, where overwriting the same line means anything. On a
-   pipe/redirect there is nothing useful to overwrite (and no reader
-   watching it happen live anyway), so this is a no-op there; the
-   permanent [OK]/[FAIL] line native_test_report_pass()/
-   native_test_report_failure() print once the test actually finishes
-   is the only per-test output in that mode, same as the "running: NAME"
-   line scripts/run_tests.sh's pass-count check used to grep for -- that
-   check now counts "[OK] "/"[FAIL] " instead, one of which every test
-   is guaranteed to print in both modes. Never reachable from ordinary
-   paweli source (an identifier can't start with '$', see
-   synthetic_token()'s own comment in compiler.c), so this and its
-   siblings below are registered as bare globals the same way
-   print/assert are, without needing a native_signatures.c entry nobody
-   could ever call anyway. */
+/* $test_progress(current, total, name) draws the "running now" line
+   before each @test call. It only draws on a terminal, where the line
+   can be redrawn in place. On a pipe it does nothing, and the
+   [OK]/[FAIL] line is the only output per test. paweli source cannot
+   call it, since an identifier cannot start with '$'. It is registered
+   as a bare global like print. */
 static bool native_test_progress(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	obj_string_t *name;
 
@@ -190,12 +142,9 @@ static bool native_test_progress(vm_t *vm, int arg_count, value_t *args, value_t
 		name = (obj_string_t *)value_as_obj(args[2]);
 		fprintf(stdout, "\r\x1b[2K\x1b[2m... [%lld/%lld] %.*s\x1b[0m", (long long)value_as_int(args[0]), (long long)value_as_int(args[1]), (int)name->length, name->chars);
 		fflush(stdout);
-		// The delay belongs here, not after the test's own [OK]/[FAIL]
-		// line prints: a test itself runs in microseconds, so without
-		// this the progress line drawn above would be overwritten by
-		// the [OK]/[FAIL] line before any terminal ever gets a chance
-		// to paint a frame with it visible, defeating the whole point
-		// of test_step_delay_ms().
+		// The delay goes here, before the test runs. A test takes
+		// microseconds, so the [OK]/[FAIL] line would replace the progress
+		// line before the terminal ever showed it.
 		test_step_sleep();
 	}
 
@@ -203,11 +152,8 @@ static bool native_test_progress(vm_t *vm, int arg_count, value_t *args, value_t
 	return true;
 }
 
-/* $test_report_pass(name): the permanent "[OK] NAME" line a passing
-   test leaves behind, overwriting whatever $test_progress() last drew
-   on that same line (a real terminal) or just printed plain (a
-   pipe/redirect, where $test_progress() never drew anything to begin
-   with). */
+/* $test_report_pass(name) prints the permanent "[OK] NAME" line. On a
+   terminal it replaces the progress line. */
 static bool native_test_report_pass(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	obj_string_t *name;
 
@@ -227,9 +173,8 @@ static bool native_test_report_pass(vm_t *vm, int arg_count, value_t *args, valu
 	return true;
 }
 
-/* $test_report_failure(name, message): same idea as
-   native_test_report_pass(), but a failure also gets its caught
-   message on an indented line right underneath. */
+/* $test_report_failure(name, message) prints "[FAIL] NAME" with the
+   caught message indented on the next line. */
 static bool native_test_report_failure(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	obj_string_t *name;
 	obj_string_t *message;
@@ -251,15 +196,10 @@ static bool native_test_report_failure(vm_t *vm, int arg_count, value_t *args, v
 	return true;
 }
 
-/* $test_report_summary(total, passed, failed): the run's one and only
-   closing line, replacing whatever $test_progress() last drew on that
-   same line (a real terminal; a plain trailing line on a pipe/
-   redirect). Deliberately a single merged line -- "... [N/N] DONE" and
-   the pass/fail counts used to print as two separate lines, which meant
-   the progress line's own closing frame was immediately pushed up and
-   out of "the last thing on screen" the moment the counts printed below
-   it. Green when nothing failed, red otherwise; plain on a pipe/
-   redirect same as everything else here. */
+/* $test_report_summary(total, passed, failed) prints the one closing
+   line of the run, with the pass and fail counts. On a terminal it
+   replaces the progress line. It is green when nothing failed and red
+   otherwise. */
 static bool native_test_report_summary(vm_t *vm, int arg_count, value_t *args, value_t *out_result) {
 	int64_t total;
 	int64_t passed;

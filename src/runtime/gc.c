@@ -6,10 +6,9 @@
 #include "runtime/table.h"
 #include "runtime/vm.h"
 
-// The gray worklist for tracing: objects that are marked reachable but
-// whose own children (a function's constants, a module's members, ...)
-// have not been walked yet. An explicit stack instead of recursion, so
-// a long chain of nested objects cannot overflow the C call stack.
+// The gray worklist: objects that are marked but whose children are
+// not walked yet. It is an explicit stack, so a long chain of objects
+// cannot overflow the C stack.
 typedef struct {
 	obj_t **items;
 	size_t count;
@@ -61,8 +60,7 @@ static void mark_table(gray_stack_t *gray, table_t *table) {
 	}
 }
 
-/* Marks obj's own children gray. obj itself is already black by the time
-   this runs (mark_object() marked it before pushing it onto the worklist). */
+/* Marks obj's children gray. obj is already marked. */
 static void blacken_object(gray_stack_t *gray, obj_t *obj) {
 	obj_function_t *function;
 	obj_module_t *module;
@@ -110,11 +108,9 @@ static void blacken_object(gray_stack_t *gray, obj_t *obj) {
 			}
 			break;
 		case OBJ_UPVALUE:
-			// While open, location points into the live value stack,
-			// already covered by mark_roots()'s stack scan; closed is
-			// only meaningful (non-null garbage) once location has been
-			// repointed at it, so marking it unconditionally here is
-			// always either correct or a harmless no-op.
+			// While open, location points into the value stack, which mark_roots()
+			// scans. closed only matters after the upvalue is closed. Marking it
+			// always is correct in both states.
 			upvalue = (obj_upvalue_t *)obj;
 			mark_value(gray, upvalue->closed);
 			break;
@@ -138,19 +134,13 @@ static void mark_roots(gray_stack_t *gray, vm_t *vm) {
 		}
 	}
 
-	// Every loaded file's globals table is a permanent root, the same
-	// way the single globals table was before modules existed: nothing
-	// in it gets collected just because the running code has stopped
-	// referencing it.
+	// Every loaded file's globals table is a permanent root.
 	for (j = 0; j < vm->file_globals_count; j++) {
 		mark_table(gray, vm->file_globals[j]);
 	}
 
-	// An open upvalue must stay alive even once nothing but
-	// vm->open_upvalues itself points at it: close_upvalues() (vm.c)
-	// still has to walk the whole list when the frame that owns its
-	// stack slot actually returns, whether or not the closure that
-	// originally captured it is still reachable by then.
+	// An open upvalue stays alive even if only vm->open_upvalues points at
+	// it. close_upvalues() walks the list when the owning frame returns.
 	for (upvalue = vm->open_upvalues; upvalue != NULL; upvalue = upvalue->next) {
 		mark_object(gray, (obj_t *)upvalue);
 	}
@@ -193,7 +183,7 @@ static void sweep(gc_heap_t *heap) {
 	}
 }
 
-static bool gc_safepoint_check_enabled(void) {
+static bool gc_safepoint_check_enabled() {
 	const char *value;
 
 	value = getenv("PAWELI_GC_SAFEPOINT_CHECK");
@@ -239,15 +229,11 @@ void gc_note_safepoint(gc_heap_t *heap) {
 	heap->bytes_since_safepoint = 0;
 }
 
-// PAWELI_GC_SAFEPOINT_CHECK is a debug tripwire, not a correctness
-// mechanism: it exists to turn "a JIT call site can allocate but has no
-// paired emit_gc_check(), so this heap grows forever unnoticed" into an
-// immediate, loud failure instead of a silent leak someone eventually
-// notices in production. Plain if/abort rather than assert(), matching
-// this codebase's own convention (see tests/jit/jit_selftest.c's own
-// comment): assert() compiles away under NDEBUG/Release, which would
-// silently turn this into a no-op under exactly the build configuration
-// most likely to run for a while before anyone looks at memory use.
+/* PAWELI_GC_SAFEPOINT_CHECK is a debug tripwire. It turns a JIT call
+   site that allocates with no GC check into an immediate abort, where
+   it would otherwise be a heap that grows without limit. It uses a
+   plain if and abort(), since assert() is compiled out of a Release
+   build. */
 void gc_heap_note_alloc(gc_heap_t *heap, size_t size) {
 	heap->bytes_allocated += size;
 

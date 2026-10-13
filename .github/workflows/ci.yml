@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Install the tree-sitter CLI
+        working-directory: packages/tree-sitter-paweli
+        run: npm ci
+
+      - name: Build Debug and Release
+        run: |
+          make build
+          make release
+
+      - name: Test Debug
+        run: ./scripts/run_tests.sh
+
+      - name: Test Debug with GC stress
+        run: PAWELI_GC_STRESS=1 ./scripts/run_tests.sh
+
+      - name: Test Debug with forced JIT
+        run: PAWELI_JIT_THRESHOLD=0 ./scripts/run_tests.sh
+
+      - name: Test Debug with GC stress and forced JIT
+        run: PAWELI_GC_STRESS=1 PAWELI_JIT_THRESHOLD=0 ./scripts/run_tests.sh
+
+      - name: Test Release
+        run: |
+          PAWELI="$PWD/build/release/paweli" ./scripts/run_tests.sh
+          PAWELI="$PWD/build/release/paweli" PAWELI_JIT_THRESHOLD=0 ./scripts/run_tests.sh
+
+      - name: JIT selftest
+        run: |
+          ./build/debug/jit_selftest
+          ./build/release/jit_selftest
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # The test script is bash. A CRLF checkout would break it.
+      - name: Keep LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
+      - name: Build Release
+        run: |
+          cmake -S . -B build/windows -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/windows
+
+      # The grammar tests do not use the paweli binary. The Linux job runs them.
+      - name: Test
+        env:
+          PAWELI_EXE_SUFFIX: .exe
+          PAWELI_SKIP_GRAMMAR_TESTS: 1
+        run: |
+          export PAWELI="$PWD/build/windows/paweli.exe"
+          ./scripts/run_tests.sh
+          PAWELI_JIT_THRESHOLD=0 ./scripts/run_tests.sh
+          PAWELI_GC_STRESS=1 PAWELI_JIT_THRESHOLD=0 ./scripts/run_tests.sh
+
+      - name: JIT selftest
+        run: ./build/windows/jit_selftest.exe

@@ -20,7 +20,7 @@ fn main() {
 
 ## Platform support
 
-`paweli` runs on x86_64 Linux only. Windows, macOS, and ARM support is planned.
+`paweli` runs on x86_64 Linux and x86_64 Windows. macOS and ARM support is planned.
 
 ## License
 

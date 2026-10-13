@@ -9,12 +9,11 @@
 #include "stdlib/math.h"
 #include "stdlib/string.h"
 
-/* Registers everything the standard library provides into globals: bare
-   "print", plus a "stdlib" module holding the rest. Both are always
-   available in every loaded file, no #module needed. Called once per
-   file via vm_new_file_globals(), not directly. */
+/* Registers the standard library in globals: the bare "print", and a
+   "stdlib" module with the rest. Every loaded file gets both, with no
+   #module. vm_new_file_globals() calls this once per file. */
 void stdlib_install(vm_t *vm, table_t *globals);
 
-/* Shared helpers for the native functions in math.c/string.c/convert.c. */
+/* Shared helpers for the natives in the other stdlib files. */
 void stdlib_register_fn(vm_t *vm, obj_module_t *module, const char *name, native_fn_t function);
 bool stdlib_check_arity(vm_t *vm, const char *fn_name, int arg_count, int expected);

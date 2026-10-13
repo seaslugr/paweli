@@ -27,21 +27,40 @@ set(PAWELI_LIB_SOURCES
 
     src/parser/ast.c
     src/parser/parser.c
+    src/parser/parser_decl.c
+    src/parser/parser_stmt.c
+    src/parser/parser_expr.c
 
     src/compiler/chunk.c
     src/compiler/compiler.c
+    src/compiler/compiler_emit.c
+    src/compiler/compiler_scope.c
+    src/compiler/compiler_function.c
+    src/compiler/compiler_stmt.c
+    src/compiler/compiler_expr.c
+    src/compiler/compiler_call.c
+    src/compiler/compiler_test_runner.c
     src/compiler/type.c
     src/compiler/signature.c
     src/compiler/native_signatures.c
-    src/compiler/paw.c
 
-    src/platform/exe.c
+    src/paw/paw_write.c
+    src/paw/paw_read.c
+    src/paw/paw_exe.c
+
 
     src/project/manifest.c
 
     src/jit/jit_asm.c
     src/jit/jit_exec_mem.c
     src/jit/jit_compile.c
+    src/jit/jit_analysis.c
+    src/jit/jit_frame.c
+    src/jit/jit_helpers.c
+    src/jit/jit_ops_stack.c
+    src/jit/jit_ops_arith.c
+    src/jit/jit_ops_call.c
+    src/jit/jit_ops_object.c
     src/jit/jit_dispatch.c
 
     src/runtime/value.c
@@ -59,30 +78,54 @@ set(PAWELI_LIB_SOURCES
     src/stdlib/io.c
 )
 
+if(WIN32)
+    list(APPEND PAWELI_LIB_SOURCES src/platform/windows.c)
+else()
+    list(APPEND PAWELI_LIB_SOURCES src/platform/posix.c)
+endif()
+
+# MinGW has no AddressSanitizer or UBSan runtime, so a Windows Debug
+# build keeps -fanalyzer and drops the sanitizers.
+if(WIN32)
+    set(PAWELI_SANITIZE_FLAGS "")
+else()
+    set(PAWELI_SANITIZE_FLAGS -fsanitize=address,undefined)
+endif()
+
 set(PAWELI_WARNING_OPTIONS
     -Wall
     -Wextra
     -Wno-unused-parameter
     $<$<CONFIG:Debug>:-g -O0>
     $<$<CONFIG:Debug>:-fanalyzer>
-    $<$<CONFIG:Debug>:-fsanitize=address,undefined -fno-omit-frame-pointer>
+    $<$<CONFIG:Debug>:${PAWELI_SANITIZE_FLAGS} -fno-omit-frame-pointer>
     $<$<CONFIG:RelWithAsserts>:-g -Ofast>
     $<$<CONFIG:RelWithDebInfo>:-g -DNDEBUG -Ofast>
     $<$<CONFIG:Release>:-DNDEBUG -Ofast -Werror>
 )
 
-set(PAWELI_SANITIZE_LINK_OPTIONS
-    $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+set(PAWELI_LINK_OPTIONS
+    $<$<CONFIG:Debug>:${PAWELI_SANITIZE_FLAGS}>
     $<$<CONFIG:RelWithDebInfo>:-s>
     $<$<CONFIG:Release>:-s>
 )
 
-# src/cli/ is the paweli executable's own CLI (argv parsing/dispatch/
-# presentation) plus exec.c (compiling/running/building a program once
-# the CLI has decided what to do); see docs/design.md's decision log.
-# Deliberately not part of PAWELI_LIB_SOURCES: jit_selftest below is a
-# standalone harness for src/jit/ with no argv/CLI surface of its own,
-# the same reason it doesn't link src/main.c either.
+set(PAWELI_DEFINITIONS "")
+
+if(WIN32)
+    # -static: the .exe needs no MinGW runtime DLLs next to it.
+    # --stack: Windows gives the main thread 1 MB by default. Linux
+    # gives 8 MB. A JIT frame is larger on Win64 (shadow space, two
+    # more saved registers), so 16 MB gives deep paweli recursion at
+    # least the room it has on Linux.
+    list(APPEND PAWELI_LINK_OPTIONS -static -Wl,--stack,16777216)
+    # Makes printf understand %zu and %lld on the older msvcrt runtime.
+    list(APPEND PAWELI_DEFINITIONS __USE_MINGW_ANSI_STDIO=1)
+endif()
+
+# src/cli/ is the paweli executable's CLI: argv parsing, dispatch, and
+# output, plus exec.c, which compiles and runs a program. It is kept
+# out of PAWELI_LIB_SOURCES so jit_selftest does not link it.
 set(PAWELI_CLI_SOURCES
     src/cli/commands.c
     src/cli/exec.c
@@ -92,24 +135,21 @@ set(PAWELI_CLI_SOURCES
 add_executable(paweli src/main.c ${PAWELI_CLI_SOURCES} ${PAWELI_LIB_SOURCES})
 target_include_directories(paweli PRIVATE src)
 target_compile_options(paweli PRIVATE ${PAWELI_WARNING_OPTIONS})
-target_link_options(paweli PRIVATE ${PAWELI_SANITIZE_LINK_OPTIONS})
-target_compile_definitions(paweli PRIVATE "PAWELI_BUILD_TYPE=\"$<CONFIG>\"")
+target_link_options(paweli PRIVATE ${PAWELI_LINK_OPTIONS})
+target_compile_definitions(paweli PRIVATE "PAWELI_BUILD_TYPE=\"$<CONFIG>\"" ${PAWELI_DEFINITIONS})
 
 if(UNIX)
     target_link_libraries(paweli PRIVATE m)
 endif()
 
-# Standalone C harness for the JIT subsystem (src/jit/), which -- unlike
-# every other feature in this codebase -- isn't reachable end-to-end
-# through a .pw script until src/jit/jit_dispatch.c wires hotness-driven
-# compilation into call_value() (see docs/todo.md's JIT phase plan).
-# Drives jit_compile_function()/jit_entry directly against a hand-built
-# chunk_t, the same way scripts/run_tests.sh drives paweli against
-# tests/*.pw.
+# A standalone C test of the JIT. It calls jit_compile_function() on a
+# hand-built chunk_t and runs the result, with no .pw script.
+# scripts/run_tests.sh does not run it. Run it by hand.
 add_executable(jit_selftest tests/jit/jit_selftest.c ${PAWELI_LIB_SOURCES})
 target_include_directories(jit_selftest PRIVATE src)
 target_compile_options(jit_selftest PRIVATE ${PAWELI_WARNING_OPTIONS})
-target_link_options(jit_selftest PRIVATE ${PAWELI_SANITIZE_LINK_OPTIONS})
+target_link_options(jit_selftest PRIVATE ${PAWELI_LINK_OPTIONS})
+target_compile_definitions(jit_selftest PRIVATE ${PAWELI_DEFINITIONS})
 
 if(UNIX)
     target_link_libraries(jit_selftest PRIVATE m)

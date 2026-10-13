@@ -55,22 +55,17 @@ static bool stdlib_pop(vm_t *vm, int arg_count, value_t *args, value_t *out_resu
 	return true;
 }
 
-/* Stable top-down merge sort: values[start, end) sorted in place, using
-   buffer (already sized to the whole array, by the caller) as scratch.
-   comparator is a paweli fn(T,T)->bool value, called via vm_call_value(),
-   which is reentrant, so it can be an arbitrary paweli function, including
-   one that itself calls back into more native code. Not qsort(): qsort's
-   comparator has no way to carry a vm_t* through to call back into
-   paweli, and the non-standard *_r/_s variants that do aren't portable.
+/* A stable top-down merge sort of values[start, end). buffer is
+   scratch space the size of the whole array. comparator is a paweli
+   fn(T,T)->bool, called through vm_call_value(), so it can be any
+   paweli function. qsort() cannot be used: its comparator has no way
+   to receive the vm, and the variants that take a context argument are
+   not portable.
 
-   GC safety: buffer is plain malloc'd memory, not a GC root, but that's
-   fine, since every value it ever holds is a copy of something still
-   physically present in values[] (the array's own storage, already
-   reachable through the obj_array_t sitting in this native's own args[0],
-   itself still live on the VM stack for the whole call) at that same
-   moment, right up until the final copy-back loop overwrites values[]
-   with buffer's contents. Nothing is ever reachable *only* through
-   buffer. */
+   GC safety: buffer is malloc'd and is not a GC root. That is safe,
+   because every value in it is a copy of a value still in values[],
+   and the array is reachable from this native's args for the whole
+   call. */
 static bool array_merge_sort(vm_t *vm, value_t *values, value_t *buffer, size_t start, size_t end, value_t comparator) {
 	size_t mid;
 	size_t left;
@@ -98,10 +93,9 @@ static bool array_merge_sort(vm_t *vm, value_t *values, value_t *buffer, size_t 
 	out = start;
 
 	while (left < mid && right < end) {
-		// less_than(right, left): only take from the right half when it
-		// is *strictly* less than the left half's current element: ties
-		// go to the left half, which is what keeps the sort stable
-		// (equal elements never cross past each other).
+		// less_than(right, left): take from the right half only when it is
+		// strictly less. A tie goes to the left half, which keeps the sort
+		// stable.
 		compare_args[0] = values[right];
 		compare_args[1] = values[left];
 		if (!vm_call_value(vm, comparator, 2, compare_args, &less_than)) {

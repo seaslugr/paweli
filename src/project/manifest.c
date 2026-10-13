@@ -1,15 +1,14 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "diagnostics/diagnostic.h"
 #include "lexer/lexer.h"
 #include "manifest.h"
+#include "platform/platform.h"
 
 static char *read_manifest_source(const char *path);
+static bool has_path_separator(const char *name);
 static char *unescape_string_literal(const char *raw, size_t raw_length);
 static char *dup_string(const char *chars, size_t length);
 static void manifest_error(token_t token, const char *path, const char *source, const char *code, const char *message);
@@ -53,13 +52,10 @@ static char *read_manifest_source(const char *path) {
 	return buffer;
 }
 
-/* Same escape set src/runtime/object.c's object_new_string_from_literal()
-   handles, duplicated rather than shared: that one allocates an
-   interned, GC-tracked obj_string_t, which needs a live gc_heap_t/
-   table_t. A manifest is read before any of that exists (init/build
-   read it to decide what to compile in the first place), so it just
-   wants a plain malloc'd C string. raw/raw_length exclude the
-   surrounding quotes. */
+/* Decodes the same escapes as object_new_string_from_literal(). That
+   function makes a GC string and needs a heap. A manifest is read
+   before a heap exists, so this returns a plain malloc'd C string. raw
+   does not include the quotes. */
 static char *unescape_string_literal(const char *raw, size_t raw_length) {
 	char *buffer;
 	size_t out_len;
@@ -112,10 +108,8 @@ static char *dup_string(const char *chars, size_t length) {
 	return out;
 }
 
-/* Mirrors src/parser/parser.c's error_at(): a TOKEN_ERROR carries its
-   own "lexer::*" code and message text in token.start/length instead
-   of code/message, same reporting split every other stage in this
-   codebase already uses. */
+/* Like parser_error_at(): a TOKEN_ERROR has its own "lexer::*" code,
+   and its message is in token.start and token.length. */
 static void manifest_error(token_t token, const char *path, const char *source, const char *code, const char *message) {
 	if (token.type == TOKEN_ERROR && token.error_code != NULL) {
 		diagnostic_emit(DIAG_ERROR, token.error_code, path, source, token.line, token.column, 0, "%.*s", (int)token.length, token.start);
@@ -126,8 +120,8 @@ static void manifest_error(token_t token, const char *path, const char *source, 
 	}
 }
 
-/* Takes ownership of value on success (stores it directly into *out),
-   frees it on any failure path (unknown/duplicate field). */
+/* Takes ownership of value. It is stored in *out on success and freed
+   on failure. */
 static bool assign_field(project_manifest_t *out, const char *field_name, size_t field_name_length, char *value, token_t field_token, const char *path, const char *source) {
 	char **slot;
 
@@ -222,13 +216,8 @@ bool project_manifest_read(const char *path, project_manifest_t *out) {
 		}
 	}
 
-	// type_token holds the TOKEN_EOF that ended the loop above on every
-	// path that reaches here (ok is only ever still true past the loop
-	// if it ran out via TOKEN_EOF, never via one of the mid-loop
-	// `break`s, which always pair with ok = false first). Reusing it
-	// through manifest_error()'s own "at end of file: %s" branch anchors
-	// a missing-field error at the file's end instead of a made-up
-	// line 0.
+	// type_token is the TOKEN_EOF that ended the loop. Reporting at it
+	// puts a missing-field error at the end of the file.
 	if (ok && out->name == NULL) {
 		manifest_error(type_token, path, source, "project::missing-field", "missing required field 'name'");
 		ok = false;
@@ -259,14 +248,19 @@ void project_manifest_free(project_manifest_t *manifest) {
 	manifest->entry = NULL;
 }
 
-/* Only ever reached when name is NULL, i.e. `paweli init` with no
-   argument (main.c's init_command() always passes name == dir whenever
-   it created a fresh directory, so this is the "." case in practice).
-   dir == "." resolves the real directory name via getcwd() (so the
-   manifest's default name is the current directory's actual name, not
-   the literal string "."); anything else takes its own basename
-   directly. Falls back to "project" if getcwd() fails or the resolved
-   name would be empty (e.g. dir is "/"). */
+static bool has_path_separator(const char *name) {
+	for (const char *p = name; *p != '\0'; p++) {
+		if (platform_is_path_separator(*p)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/* Only used when name is NULL, which is `paweli init` with no
+   argument. For "." it takes the name of the current directory. For
+   anything else it takes dir's last path component. Returns "project"
+   if the directory cannot be read or the name is empty. */
 static char *derive_name_from_dir(const char *dir) {
 	char cwd_buf[4096];
 	const char *base_source;
@@ -277,7 +271,7 @@ static char *derive_name_from_dir(const char *dir) {
 	size_t base_len;
 
 	if (strcmp(dir, ".") == 0) {
-		if (getcwd(cwd_buf, sizeof(cwd_buf)) == NULL) {
+		if (!platform_current_dir(cwd_buf, sizeof(cwd_buf))) {
 			return dup_string("project", strlen("project"));
 		}
 		base_source = cwd_buf;
@@ -286,14 +280,14 @@ static char *derive_name_from_dir(const char *dir) {
 	}
 
 	len = strlen(base_source);
-	while (len > 1 && base_source[len - 1] == '/') {
+	while (len > 1 && platform_is_path_separator(base_source[len - 1])) {
 		len--;
 	}
 
 	found_slash = false;
 	last_slash = 0;
 	for (i = 0; i < len; i++) {
-		if (base_source[i] == '/') {
+		if (platform_is_path_separator(base_source[i])) {
 			last_slash = i;
 			found_slash = true;
 		}
@@ -306,11 +300,8 @@ static char *derive_name_from_dir(const char *dir) {
 	return dup_string(base_source + (found_slash ? last_slash + 1 : 0), base_len);
 }
 
-/* Writes value as a paweli string literal, escaping '\' and '"' so an
-   arbitrary directory-name-derived value round-trips through
-   project_manifest_read() correctly; every other manifest-reserved
-   escape (\n, \t, ...) is left to a human hand-editing the file, not
-   something init itself ever needs to produce. */
+/* Writes value as a paweli string literal. '\' and '"' are escaped, so
+   a name taken from a directory reads back correctly. */
 static void write_string_field(FILE *file, const char *field_name, const char *value) {
 	const char *c;
 
@@ -332,15 +323,10 @@ bool project_init(const char *dir, const char *name) {
 	FILE *manifest_file;
 	FILE *main_file;
 
-	// The name ends up as a bare filename component in a project-mode
-	// `paweli build`'s output path (target/<name>.paw); a '/' in it
-	// would silently aim that write at some other directory (or fail
-	// confusingly, if that directory doesn't exist) rather than doing
-	// anything a project name plausibly means. Caught here, at the
-	// boundary where it's still just a CLI argument, rather than left
-	// to surface however build happens to fail later.
-	if (name != NULL && strchr(name, '/') != NULL) {
-		fprintf(stderr, "paweli: project name '%s' cannot contain '/'\n", name);
+	// The name becomes a file name under build/. A path separator in it
+	// would send the output to another directory, so it is rejected here.
+	if (name != NULL && has_path_separator(name)) {
+		fprintf(stderr, "paweli: project name '%s' cannot contain a path separator\n", name);
 		return false;
 	}
 

@@ -3,36 +3,46 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PAWELI="${REPO_ROOT}/build/debug/paweli"
 SUITE="${REPO_ROOT}/tests/suite/main.pw"
+
+# Three overrides let this script test a cross-compiled Windows build
+# under wine (see `make test-windows`):
+#   PAWELI             the binary to test
+#   PAWELI_RUNNER      a command that runs it, e.g. "wine"
+#   PAWELI_EXE_SUFFIX  what `build --bin` adds to its output, e.g. ".exe"
+PAWELI="${PAWELI:-${REPO_ROOT}/build/debug/paweli}"
+RUNNER="${PAWELI_RUNNER:-}"
+EXE_SUFFIX="${PAWELI_EXE_SUFFIX:-}"
+
+# Runs a paweli binary or a built executable with stdin closed and
+# stderr folded into stdout. Strips the carriage returns a Windows
+# build writes, so output compares the same on every platform.
+run_exe() {
+	${RUNNER} "$@" < /dev/null 2>&1 | tr -d '\r'
+	return "${PIPESTATUS[0]}"
+}
 
 if [ ! -x "${PAWELI}" ]; then
 	echo "paweli binary not found at ${PAWELI}. Run 'make build' first" >&2
 	exit 1
 fi
 
-# Debug tripwire: aborts if any allocation reachable from JIT-generated
-# code runs for too long without hitting a GC safepoint (gc.c's
-# gc_heap_note_alloc()). Exported for every invocation below so a
-# regression of this specific bug class (an allocating call reachable
-# from the JIT with no paired emit_gc_check()) fails the suite loudly
-# instead of only showing up later as unbounded memory growth.
+# A debug tripwire. paweli aborts if JIT code allocates for too long
+# without reaching a GC safepoint (see gc_heap_note_alloc() in gc.c).
+# A JIT call site that allocates with no GC check then fails the
+# suite at once.
 export PAWELI_GC_SAFEPOINT_CHECK=1
 
 pass=0
 fail=0
 
-# The whole suite is one mega program (tests/suite/main.pw importing
-# category modules via the module system), driven through @test/
-# `paweli test`. It's run four different ways below, each exercising a
-# genuinely different code path: direct interpretation, a compiled .paw
-# (embedded and stripped source), and a standalone --bin executable.
-# Every mode's own "[OK] <name>"/"[FAIL] <name>" lines are captured so a
-# category silently missing from main.pw's @test wrappers (never wired
-# up, or dropped by a bad edit) is caught by count, not just by the exit
-# code. None of these invocations run with a tty attached, so
-# $test_report_pass()/$test_report_failure() (src/stdlib/stdlib.c)
-# always print the plain, uncolored form of these lines here.
+# The suite is one program: tests/suite/main.pw imports one module
+# per category and runs through `paweli test`. It is run four ways
+# below, and each uses a different code path: interpreted, a .paw
+# with embedded source, a .paw with stripped source, and a --bin
+# executable. The "[OK] <name>" and "[FAIL] <name>" lines of each
+# run are counted, so a category missing from main.pw is caught by
+# count. No run has a terminal attached, so these lines are plain.
 
 expected_count=$(grep -c '^@test ' "${SUITE}")
 
@@ -54,17 +64,16 @@ count_and_report() {
 	fi
 }
 
-# 1. Direct interpretation.
-output=$("${PAWELI}" test "${SUITE}" < /dev/null 2>&1)
+# 1. Interpreted.
+output=$(run_exe "${PAWELI}" test "${SUITE}")
 code=$?
 count_and_report "interpreted" "${output}" "${code}"
 
 paw_tmp_dir=$(mktemp -d)
 trap 'rm -rf "${paw_tmp_dir}"' EXIT
 
-# 2 & 3. Compiled .paw, embedded source and --strip-source, run mode
-# baked in at build time (no --run-tests needed/allowed when running
-# the .paw itself).
+# 2 and 3. A compiled .paw, with embedded source and with
+# --strip-source. Test mode is baked in at build time.
 for variant in embedded stripped; do
 	paw_file="${paw_tmp_dir}/suite.${variant}.paw"
 	if [ "${variant}" = "stripped" ]; then
@@ -73,7 +82,7 @@ for variant in embedded stripped; do
 		strip_flag=""
 	fi
 
-	build_output=$("${PAWELI}" build "${SUITE}" "${paw_file}" --run-tests ${strip_flag} < /dev/null 2>&1)
+	build_output=$(run_exe "${PAWELI}" build "${SUITE}" "${paw_file}" --run-tests ${strip_flag})
 	build_code=$?
 
 	if [ "${build_code}" -ne 0 ]; then
@@ -83,16 +92,15 @@ for variant in embedded stripped; do
 		continue
 	fi
 
-	output=$("${PAWELI}" "${paw_file}" < /dev/null 2>&1)
+	output=$(run_exe "${PAWELI}" "${paw_file}")
 	code=$?
 	count_and_report "${variant} .paw" "${output}" "${code}"
 done
 
-# 4. `paweli build <file.pw> --bin <name> --run-tests` produces a
-# standalone native executable with the run mode baked in. Run
-# directly, with no `paweli` invocation anywhere in the run step.
+# 4. `paweli build --bin --run-tests` makes a standalone executable
+# with test mode baked in. It runs with no `paweli` involved.
 bin_file="${paw_tmp_dir}/suite.bin"
-build_output=$("${PAWELI}" build "${SUITE}" --bin "${bin_file}" --run-tests < /dev/null 2>&1)
+build_output=$(run_exe "${PAWELI}" build "${SUITE}" --bin "${bin_file}" --run-tests)
 build_code=$?
 
 if [ "${build_code}" -ne 0 ]; then
@@ -100,22 +108,20 @@ if [ "${build_code}" -ne 0 ]; then
 	echo "${build_output}" | sed 's/^/    /'
 	fail=$((fail + 1))
 else
-	output=$("${bin_file}" < /dev/null 2>&1)
+	output=$(run_exe "${bin_file}${EXE_SUFFIX}")
 	code=$?
 	count_and_report "--bin executable" "${output}" "${code}"
 fi
 
-# 5. `paweli init`, `paweli run`/`paweli test` (project.pawproj, no
-# filename argument), and project-mode `paweli build`, driven end to
-# end in a scratch directory: the manifest and starter main.pw
-# actually get written, a second init refuses to clobber them, run/
-# test execute the entry file directly with no build artifact
-# involved, and build's output forms (.paw and --bin) come out under
-# build/ and actually run.
+# 5. Project mode, end to end in a scratch directory. `paweli init`
+# writes the manifest and main.pw. A second init refuses to
+# overwrite them. `paweli run` and `paweli test` run the entry file
+# with no build output. `paweli build` writes a .paw and a --bin
+# under build/, and both run.
 project_dir="${paw_tmp_dir}/project_smoke"
 mkdir -p "${project_dir}"
 
-init_output=$(cd "${project_dir}" && "${PAWELI}" init < /dev/null 2>&1)
+init_output=$(cd "${project_dir}" && run_exe "${PAWELI}" init)
 init_code=$?
 
 if [ "${init_code}" -ne 0 ] || [ ! -f "${project_dir}/project.pawproj" ] || [ ! -f "${project_dir}/main.pw" ]; then
@@ -127,7 +133,7 @@ else
 	pass=$((pass + 1))
 fi
 
-reinit_output=$(cd "${project_dir}" && "${PAWELI}" init < /dev/null 2>&1)
+reinit_output=$(cd "${project_dir}" && run_exe "${PAWELI}" init)
 reinit_code=$?
 
 if [ "${reinit_code}" -eq 0 ]; then
@@ -138,9 +144,9 @@ else
 	pass=$((pass + 1))
 fi
 
-# init'd a fresh named subdirectory too, since `paweli init <name>` has
-# its own directory-creation path init'ing "." above never exercises.
-named_init_output=$(cd "${paw_tmp_dir}" && "${PAWELI}" init named_smoke < /dev/null 2>&1)
+# `paweli init <name>` creates a directory first, which the init
+# above does not test.
+named_init_output=$(cd "${paw_tmp_dir}" && run_exe "${PAWELI}" init named_smoke)
 named_init_code=$?
 
 if [ "${named_init_code}" -ne 0 ] || [ ! -f "${paw_tmp_dir}/named_smoke/project.pawproj" ] || [ ! -f "${paw_tmp_dir}/named_smoke/main.pw" ]; then
@@ -152,7 +158,7 @@ else
 	pass=$((pass + 1))
 fi
 
-run_output=$(cd "${project_dir}" && "${PAWELI}" run < /dev/null 2>&1)
+run_output=$(cd "${project_dir}" && run_exe "${PAWELI}" run)
 run_code=$?
 
 if [ "${run_code}" -eq 0 ] && [ "${run_output}" = "Hello World!" ]; then
@@ -163,13 +169,11 @@ else
 	fail=$((fail + 1))
 fi
 
-test_output=$(cd "${project_dir}" && "${PAWELI}" test < /dev/null 2>&1)
+test_output=$(cd "${project_dir}" && run_exe "${PAWELI}" test)
 test_code=$?
 
-# main.pw's starter program has no @test functions, so `paweli test`
-# running it should still exit 0 (main() just isn't called); this is
-# mainly confirming project-mode dispatch reaches run_source() with
-# run_tests forced on, not exercising real test output.
+# The starter main.pw has no @test functions, so `paweli test` must
+# exit 0. This checks that project mode reaches the test path.
 if [ "${test_code}" -eq 0 ]; then
 	echo "PASS paweli test (project mode)"
 	pass=$((pass + 1))
@@ -178,7 +182,7 @@ else
 	fail=$((fail + 1))
 fi
 
-paw_build_output=$(cd "${project_dir}" && "${PAWELI}" build < /dev/null 2>&1)
+paw_build_output=$(cd "${project_dir}" && run_exe "${PAWELI}" build)
 paw_build_code=$?
 
 if [ "${paw_build_code}" -ne 0 ] || [ ! -f "${project_dir}/build/project_smoke.paw" ]; then
@@ -186,7 +190,7 @@ if [ "${paw_build_code}" -ne 0 ] || [ ! -f "${project_dir}/build/project_smoke.p
 	echo "${paw_build_output}" | sed 's/^/    /'
 	fail=$((fail + 1))
 else
-	run_output=$("${PAWELI}" "${project_dir}/build/project_smoke.paw" < /dev/null 2>&1)
+	run_output=$(run_exe "${PAWELI}" "${project_dir}/build/project_smoke.paw")
 	if [ "${run_output}" = "Hello World!" ]; then
 		echo "PASS paweli build (project mode, .paw)"
 		pass=$((pass + 1))
@@ -196,15 +200,15 @@ else
 	fi
 fi
 
-bin_build_output=$(cd "${project_dir}" && "${PAWELI}" build --bin smokebin < /dev/null 2>&1)
+bin_build_output=$(cd "${project_dir}" && run_exe "${PAWELI}" build --bin smokebin)
 bin_build_code=$?
 
-if [ "${bin_build_code}" -ne 0 ] || [ ! -x "${project_dir}/build/smokebin" ]; then
+if [ "${bin_build_code}" -ne 0 ] || [ ! -x "${project_dir}/build/smokebin${EXE_SUFFIX}" ]; then
 	echo "FAIL paweli build (project mode, --bin): exit ${bin_build_code}"
 	echo "${bin_build_output}" | sed 's/^/    /'
 	fail=$((fail + 1))
 else
-	run_output=$("${project_dir}/build/smokebin" < /dev/null 2>&1)
+	run_output=$(run_exe "${project_dir}/build/smokebin${EXE_SUFFIX}")
 	if [ "${run_output}" = "Hello World!" ]; then
 		echo "PASS paweli build (project mode, --bin)"
 		pass=$((pass + 1))
@@ -214,12 +218,14 @@ else
 	fi
 fi
 
-# 6. The Helix tree-sitter grammar's own corpus (parse-tree) and
-# highlight (capture) tests, independent of the paweli binary above.
+# 6. The corpus and highlight tests of the tree-sitter grammar. They
+# do not use the paweli binary. PAWELI_SKIP_GRAMMAR_TESTS skips them.
 TS_DIR="${REPO_ROOT}/packages/tree-sitter-paweli"
 TS_BIN="${TS_DIR}/node_modules/.bin/tree-sitter"
 
-if [ ! -x "${TS_BIN}" ]; then
+if [ -n "${PAWELI_SKIP_GRAMMAR_TESTS:-}" ]; then
+	echo "SKIP tree-sitter grammar tests"
+elif [ ! -x "${TS_BIN}" ]; then
 	echo "FAIL tree-sitter grammar tests: tree-sitter-cli not installed (run 'npm install' in ${TS_DIR})"
 	fail=$((fail + 1))
 else

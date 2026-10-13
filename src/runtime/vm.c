@@ -10,13 +10,12 @@
 #include "stdlib/stdlib.h"
 #include "vm.h"
 
-// Extra slack allocated past the configured stack_size. run()'s overflow
-// check runs once per instruction dispatch, and no single instruction
-// grows the stack by more than one slot. This margin only needs to
-// cover that one-instruction detection lag.
+// Slack past the configured stack_size. run() checks for overflow once
+// per instruction, and one instruction grows the stack by at most one
+// slot. The margin covers that lag.
 #define VM_STACK_SAFETY_MARGIN 64
 
-static bool gc_stress_enabled(void);
+static bool gc_stress_enabled();
 static size_t frame_instruction_index(const call_frame_t *frame);
 static void push(vm_t *vm, value_t value);
 static value_t pop(vm_t *vm);
@@ -28,24 +27,19 @@ static obj_upvalue_t *capture_upvalue(vm_t *vm, value_t *local);
 static void close_upvalues(vm_t *vm, value_t *last);
 static vm_result_t run(vm_t *vm, int stop_frame_count, value_t *out_result);
 
-static bool gc_stress_enabled(void) {
+static bool gc_stress_enabled() {
 	const char *value;
 
 	value = getenv("PAWELI_GC_STRESS");
 	return value != NULL && value[0] != '\0';
 }
 
-/* The instruction whose line/column a diagnostic should point at: the one
-   just before frame->ip, since READ_BYTE() always advances ip before an
-   opcode's handler can raise an error. A freshly pushed frame (OP_CALL
-   just set frame->ip = function->chunk.code, before this frame has
-   dispatched anything of its own) has no such "instruction before ip".
-   It falls back to the function's very first instruction instead of
-   underflowing to (size_t)-1 and reading chunk.lines/columns out of
-   bounds. Reachable even before an error originates in that frame: an
-   error reported for a *different*, older frame still walks every
-   frame's own ip to print the full backtrace (see the loop below), and
-   the newest one can be this fresh. */
+/* The instruction a diagnostic points at: the one before frame->ip,
+   since READ_BYTE() advances ip before a handler can fail. A frame
+   that was just pushed has run nothing yet, so it uses the function's
+   first instruction. That case is reachable: a backtrace for an error
+   in an older frame walks every frame, and the newest can be that
+   fresh. */
 static size_t frame_instruction_index(const call_frame_t *frame) {
 	if (frame->ip <= frame->function->chunk.code) {
 		return 0;
@@ -187,12 +181,11 @@ static bool call_value(vm_t *vm, value_t callee, int arg_count) {
 	return false;
 }
 
-/* Finds-or-creates the open upvalue for the stack slot at local, keeping
-   vm->open_upvalues sorted deepest-first so close_upvalues() can stop
-   early. Two closures created in the same scope that both capture the
-   same local (see tests/closures.pw) must end up sharing one obj_upvalue_t,
-   not each getting their own; otherwise a mutation through one would not
-   be visible through the other, breaking capture-by-reference. */
+/* Finds or creates the open upvalue for the stack slot at local. The
+   list stays sorted deepest slot first, so close_upvalues() can stop
+   early. Two closures that capture the same local share one
+   obj_upvalue_t. That is what makes a write through one visible
+   through the other. */
 static obj_upvalue_t *capture_upvalue(vm_t *vm, value_t *local) {
 	obj_upvalue_t *prev_upvalue;
 	obj_upvalue_t *upvalue;
@@ -221,11 +214,10 @@ static obj_upvalue_t *capture_upvalue(vm_t *vm, value_t *local) {
 	return created;
 }
 
-/* Closes every open upvalue pointing at slot `last` or deeper (i.e.
-   everything about to go out of scope, or about to be discarded by a
-   returning frame), copying its value into the upvalue object itself so
-   it survives the stack slot being reused. Called from OP_CLOSE_UPVALUE
-   (a single local going out of scope) and OP_RETURN (the whole frame). */
+/* Closes every open upvalue that points at slot `last` or above it.
+   Each value is copied into its upvalue object, so it survives reuse
+   of the stack slot. Called for OP_CLOSE_UPVALUE (one local leaves
+   scope) and OP_RETURN (the whole frame). */
 static void close_upvalues(vm_t *vm, value_t *last) {
 	obj_upvalue_t *upvalue;
 
@@ -318,17 +310,11 @@ static bool binary_op(vm_t *vm, uint8_t op) {
 	}
 }
 
-/* Bitwise/shift opcodes are int-only with no float branch at all, unlike
-   binary_op()'s int/float dual path. It is kept as a separate helper
-   rather than folded in there, since there is no float behavior to share.
-   int64_t << or >> by a negative amount or by 64+ is undefined behavior
-   in C; both are turned into a clean vm::shift-amount-out-of-range error
-   instead, matching how division/modulo by zero are already handled
-   rather than left as UB. A right shift of a negative left-hand side is
-   left as this platform's implementation-defined (arithmetic,
-   sign-extending) behavior. This is an accepted, documented pragmatism,
-   the same class of choice already made for unchecked overflow on
-   OP_ADD/OP_MULTIPLY elsewhere in this file. */
+/* Bitwise and shift opcodes take ints only, so they have no float
+   branch to share with binary_op(). A shift by a negative amount or by
+   64 or more is undefined behavior in C, so it is reported as
+   vm::shift-amount-out-of-range. A right shift of a negative value is
+   arithmetic on this platform and is left as it is. */
 static bool bitwise_op(vm_t *vm, uint8_t op) {
 	value_t b;
 	value_t a;
@@ -359,12 +345,9 @@ static bool bitwise_op(vm_t *vm, uint8_t op) {
 				vm_runtime_error(vm, "vm::shift-amount-out-of-range", "shift amount must be between 0 and 63, got %lld", (long long)yi);
 				return false;
 			}
-			// A signed left shift is undefined behavior in C whenever the
-			// mathematical result doesn't fit back in a non-negative
-			// value of the same signed type (e.g. 1 << 63); shifting
-			// through uint64_t and casting back sidesteps that entirely,
-			// giving the plain two's-complement bit pattern this
-			// operator is actually meant to produce.
+			// A signed left shift is undefined behavior in C when the result does
+			// not fit, as in 1 << 63. Shifting as uint64_t and casting back gives
+			// the two's-complement bit pattern.
 			push(vm, value_int((int64_t)((uint64_t)xi << yi)));
 			return true;
 		case OP_SHIFT_RIGHT:
@@ -448,10 +431,9 @@ static vm_result_t run(vm_t *vm, int stop_frame_count, value_t *out_result) {
 				pop(vm);
 				break;
 			case OP_SET_GLOBAL:
-				// Leaves the assigned value on the stack (like
-				// OP_SET_LOCAL), since assignment is itself an
-				// expression. Always a name register_globals() already
-				// proved exists, so no "undefined global" case here.
+				// Leaves the assigned value on the stack, like OP_SET_LOCAL, since
+				// assignment is an expression. The compiler has checked that the
+				// global exists.
 				name = READ_STRING();
 				table_set(frame->function->globals, name, peek(vm, 0));
 				break;
@@ -519,11 +501,9 @@ static vm_result_t run(vm_t *vm, int stop_frame_count, value_t *out_result) {
 				push(vm, value_obj((obj_t *)instance));
 				break;
 			}
-			// No type or bounds check: unlike OP_GET_INDEX/OP_SET_INDEX
-			// (a runtime int that could be out of range), a field index
-			// here is a compile-time constant the compiler only ever
-			// emits after confirming the object on the stack is an
-			// instance of exactly the struct type that field belongs to.
+			// No type or bounds check. A field index is a compile-time constant,
+			// and the compiler only emits it for an object it has proved is an
+			// instance of that struct type.
 			case OP_GET_FIELD: {
 				obj_struct_t *instance;
 
@@ -606,11 +586,9 @@ static vm_result_t run(vm_t *vm, int stop_frame_count, value_t *out_result) {
 				uint8_t i;
 
 				count = READ_BYTE();
-				// stack_top[-count] is read fresh each iteration, after
-				// the previous copy's push already moved stack_top.
-				// That shift is exactly what keeps landing on the next
-				// original element in order, without needing a separate
-				// base pointer.
+				// stack_top[-count] is read again each iteration. The previous push
+				// moved stack_top, so the same offset lands on the next original
+				// element.
 				for (i = 0; i < count; i++) {
 					push(vm, vm->stack_top[-(int)count]);
 				}
@@ -668,26 +646,11 @@ static vm_result_t run(vm_t *vm, int stop_frame_count, value_t *out_result) {
 				close_upvalues(vm, frame->slots);
 				vm->frame_count--;
 				if (vm->frame_count == stop_frame_count) {
-					// frame->slots means two different things depending
-					// on how this frame was set up, so unwinding it
-					// correctly needs two different formulas: an
-					// ordinary call (call_value()'s OBJ_FUNCTION/
-					// OBJ_CLOSURE case, always how a reentrant
-					// vm_call_value() call gets here too) sets
-					// frame->slots to one *past* the callee's own stack
-					// slot (frame->slots - arg_count sits at the first
-					// argument), so frame->slots - 1 is the callee's
-					// slot. The very first frame vm_run() itself sets
-					// up is different: frame->slots *is* vm->stack, the
-					// callee's own slot directly, with no separate
-					// "past the callee" offset, so unwinding it needs
-					// frame->slots, not frame->slots - 1. That special
-					// case is exactly stop_frame_count == 0: a
-					// reentrant call's stop_frame_count is always the
-					// frame count at the moment some already-running
-					// native called vm_call_value(), which can never be
-					// 0 (nothing calls a native before vm_run() has
-					// already pushed at least one frame).
+					// frame->slots has two meanings. For an ordinary call it points one
+					// past the callee's slot, so the callee is at frame->slots - 1. For
+					// the first frame, set up by vm_run(), it is vm->stack, the callee's
+					// slot. That first frame is the stop_frame_count == 0 case. A
+					// reentrant call always has a stop_frame_count above 0.
 					vm->stack_top = stop_frame_count == 0 ? frame->slots : frame->slots - 1;
 					if (out_result != NULL) {
 						*out_result = result;
@@ -821,12 +784,10 @@ bool vm_call_value(vm_t *vm, value_t callee, int arg_count, const value_t *args,
 	int stop_frame_count;
 	int i;
 
-	// The per-instruction stack-overflow check inside run()'s own loop
-	// only runs once *between* instructions, relying on
-	// VM_STACK_SAFETY_MARGIN as slack for whatever a single instruction
-	// pushes, always small and fixed. This pushes callee + up to 255
-	// args in one go, before run() ever gets a chance to check again,
-	// so it needs its own guard rather than trusting that margin.
+	// run() checks for stack overflow between instructions and relies on
+	// VM_STACK_SAFETY_MARGIN for what one instruction pushes. This pushes
+	// the callee and up to 255 arguments at once, so it needs its own
+	// check.
 	if ((size_t)(vm->stack_top - vm->stack) + (size_t)(arg_count + 1) > vm->stack_size) {
 		vm_runtime_error(vm, "vm::stack-overflow", "stack overflow");
 		return false;
@@ -844,9 +805,8 @@ bool vm_call_value(vm_t *vm, value_t callee, int arg_count, const value_t *args,
 	}
 
 	if (vm->frame_count == stop_frame_count) {
-		// call_value()'s OBJ_NATIVE case runs synchronously in C, with
-		// no new frame pushed. Its result is already sitting on the
-		// stack top, same as any other native call's result would be.
+		// A native runs to completion in call_value() with no new frame. Its
+		// result is on top of the stack.
 		*out_result = pop(vm);
 		return true;
 	}
@@ -854,32 +814,20 @@ bool vm_call_value(vm_t *vm, value_t callee, int arg_count, const value_t *args,
 	return run(vm, stop_frame_count, out_result) == VM_OK;
 }
 
-/* Thin public wrapper around close_upvalues() so JIT-generated code
-   (src/jit/jit_compile.c's OP_RETURN translation) can call it as a
-   plain C helper, the same way it's already called from OP_RETURN's
-   and OP_CLOSE_UPVALUE's interpreted handlers above. */
+/* close_upvalues() for JIT code. */
 void vm_close_upvalues_from(vm_t *vm, value_t *last) {
 	close_upvalues(vm, last);
 }
 
-/* Thin public wrappers around binary_op()/bitwise_op() so JIT-generated
-   code can fall back to them directly for anything its own inlined
-   both-int/both-float fast path doesn't cover (mixed types, wrong
-   types, division/modulo by zero, an out-of-range shift amount).
-   Exactly the same slow path run()'s own OP_ADD..OP_SHIFT_RIGHT cases
-   already call. */
+/* binary_op() and bitwise_op() for JIT code, which calls them for
+   everything its inline fast paths do not cover. */
 bool vm_binary_op(vm_t *vm, uint8_t op) {
 	return binary_op(vm, op);
 }
 
-/* Extracted from OP_GET_INDEX/OP_SET_INDEX's own case bodies (originally
-   inline in run()'s switch) so both the interpreter and JIT-generated
-   code (src/jit/jit_compile.c) share the exact same indexing semantics.
-   A behavior-neutral refactor, not a change in what either opcode
-   does. On success, writes the result through out_result and returns
-   true; on failure, an error has already been reported via
-   vm_runtime_error() and returns false, same convention as
-   vm_binary_op()/vm_bitwise_op(). */
+/* The body of OP_GET_INDEX, shared by the interpreter and JIT code. On
+   success the result goes to out_result. On failure the error is
+   recorded and this returns false. */
 bool vm_get_index(vm_t *vm, value_t container, value_t index_value, value_t *out_result) {
 	obj_array_t *array;
 	obj_string_t *string;
@@ -946,27 +894,17 @@ bool vm_set_index(vm_t *vm, value_t container, value_t index_value, value_t valu
 	return true;
 }
 
-/* Thin public wrapper around capture_upvalue() for the same reason as
-   vm_close_upvalues_from(). JIT-generated code (vm_make_closure()
-   below) needs to call it as a plain C helper. */
+/* capture_upvalue() for JIT code. */
 obj_upvalue_t *vm_capture_upvalue(vm_t *vm, value_t *local) {
 	return capture_upvalue(vm, local);
 }
 
-/* Builds a closure over function, capturing upvalue_count upvalues as
-   described by descriptors: upvalue_count pairs of is_local/index
-   bytes, exactly OP_CLOSURE's own variable-length bytecode encoding
-   (see chunk.h). Shared between run()'s own OP_CLOSURE case (which
-   passes frame->ip, still sitting at the first descriptor byte after
-   READ_BYTE() consumed upvalue_count) and its JIT translation
-   (src/jit/jit_compile.c, which passes a baked address into the
-   function's own chunk->code. These descriptor bytes are fixed once
-   compiled, same treatment as OP_CONSTANT's baked constant-pool
-   addresses), so both build closures identically. Can allocate
-   (object_new_closure(), and capture_upvalue() the first time a given
-   local is captured) but never fails; is_local/index are always
-   compile-time-valid by construction, so there's no error path to
-   report, unlike every other vm_*() helper in this file. */
+/* Builds a closure over function. descriptors holds upvalue_count
+   pairs of is_local and index bytes, the encoding OP_CLOSURE uses (see
+   chunk.h). run() passes frame->ip, which points at the first
+   descriptor. JIT code passes a baked address into chunk->code. It can
+   allocate but never fails, since the compiler only emits valid
+   descriptors. */
 value_t vm_make_closure(vm_t *vm, call_frame_t *frame, obj_function_t *function, const uint8_t *descriptors, uint8_t upvalue_count) {
 	obj_closure_t *closure;
 	uint8_t i;
@@ -986,8 +924,7 @@ value_t vm_make_closure(vm_t *vm, call_frame_t *frame, obj_function_t *function,
 	return value_obj((obj_t *)closure);
 }
 
-/* Extracted from OP_GET_PROPERTY's own case body, same reasoning as
-   vm_get_index()/vm_set_index() above. Never allocates. */
+/* The body of OP_GET_PROPERTY, shared with JIT code. Never allocates. */
 bool vm_get_property(vm_t *vm, obj_string_t *name, value_t object, value_t *out_result) {
 	obj_module_t *module;
 
@@ -1004,21 +941,12 @@ bool vm_get_property(vm_t *vm, obj_string_t *name, value_t object, value_t *out_
 	return true;
 }
 
-/* The JIT translation of OP_CALL: the callee and its arg_count
-   arguments are already sitting on vm's stack (JIT-generated code
-   pushed them exactly like the interpreted opcodes that would produce
-   them), same precondition OP_CALL's own interpreted handler has, so
-   this needs no separate args array the way vm_call_value() (built for
-   a *native* calling back into paweli with a C array of arguments)
-   does. Otherwise structurally identical to vm_call_value(): call_value()
-   itself already knows how to dispatch to a native (runs synchronously,
-   frame_count unchanged), a JIT-compiled paweli function/closure (also
-   runs synchronously to completion via its own jit_entry, frame_count
-   net unchanged. See call_value()'s OBJ_FUNCTION/OBJ_CLOSURE cases
-   above), or a not-yet-JIT'd one (pushes a frame and returns, needing
-   run() to actually drive it). This only has to tell those last two
-   cases apart the same way vm_call_value() already does, by checking
-   whether frame_count actually changed. */
+/* The JIT's OP_CALL. The callee and its arguments are already on the
+   stack, so there is no args array as in vm_call_value(). call_value()
+   dispatches a native or a compiled function, which both run to
+   completion with frame_count unchanged, or pushes a frame for an
+   interpreted function, which run() must then drive. The two cases are
+   told apart by whether frame_count changed. */
 bool vm_jit_call(vm_t *vm, int arg_count) {
 	int stop_frame_count;
 	value_t callee;
@@ -1035,15 +963,9 @@ bool vm_jit_call(vm_t *vm, int arg_count) {
 		return true;
 	}
 
-	// Unlike the frame_count-unchanged case above, run()'s own
-	// reentrant stop condition (OP_RETURN's handler, once frame_count
-	// has unwound back to stop_frame_count) does NOT push the return
-	// value back onto vm's stack. It only ever hands it back via
-	// *out_result, since vm_call_value()'s own callers (a native
-	// wanting a plain C value_t) never needed it on the stack too. A
-	// JIT-generated OP_CALL does need it there, matching what
-	// interpreted OP_CALL's own callers already see, so it has to be
-	// pushed explicitly here.
+	// When run() stops at stop_frame_count it returns the value through
+	// its out parameter and does not push it. JIT code expects the result
+	// on the stack, as after an interpreted OP_CALL, so push it here.
 	if (run(vm, stop_frame_count, &result) != VM_OK) {
 		return false;
 	}
@@ -1055,33 +977,20 @@ bool vm_bitwise_op(vm_t *vm, uint8_t op) {
 	return bitwise_op(vm, op);
 }
 
-/* The shared "attempt the call" phase behind OP_TRY_CALL, extracted out
-   of run()'s own case body the same way vm_get_index()/vm_get_property()
-   etc. were, and (per that same extraction) used by both run()'s
-   interpreted handler and its JIT translation
-   (src/jit/jit_compile.c). The try-block's 0-arg closure is already on
-   the stack (peek(vm,0)), same precondition the interpreted handler
-   always had.
+/* The call phase of OP_TRY_CALL, shared by run() and JIT code. The
+   try block's closure is on top of the stack.
 
-   On success: leaves the stack exactly where it was before the closure
-   was pushed (the closure itself is discarded, unlike a normal call
-   which leaves the result where the callee sat), with the call's result
-   pushed there instead, and returns true.
+   On success the closure is replaced by the call's result and this
+   returns true.
 
-   On failure: unwinds frame_count/stack_top back to that same point,
-   closes every upvalue the attempt opened, and pushes the error message
-   as a string in place of a result, then returns false. The caller
-   (run()'s own case, or JIT-generated code) branches on this return
-   value to decide whether to fall through (success) or jump to the
-   catch handler (failure); either way, something is already correctly
-   sitting on the stack for the code at the landing point to use, so
-   neither caller needs any further stack bookkeeping of its own.
+   On failure it restores frame_count and stack_top to that same point,
+   closes every upvalue the attempt opened, pushes the error message as
+   a string, and returns false. The caller then falls through or jumps
+   to the catch handler. Either way the stack is ready for the code it
+   lands on.
 
-   Structurally identical to call_value() dispatching an OBJ_CLOSURE
-   then vm_jit_call()'s own sync-vs-reentrant check (see its comment).
-   The try-block closure may now complete synchronously via
-   jit_entry rather than needing run() to drive it, exactly like any
-   other closure call since Phase (b). */
+   The dispatch is the same as in vm_jit_call(): the closure may run to
+   completion through jit_entry, or need run() to drive it. */
 bool vm_try_call(vm_t *vm) {
 	value_t *reset_stack_top;
 	int stop_frame_count;

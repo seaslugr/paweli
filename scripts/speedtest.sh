@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Compares wall-clock speed across paweli's three run forms (.pw source,
-# .paw bytecode container, --bin native executable) against a hand-written
-# C equivalent of the same program, for every benchmark under bench/pw/.
-#
-# Each benchmark's C file (bench/c/<name>.c) is written to do the same
-# algorithm the .pw version does, including matching allocation strategy
-# (e.g. array_sort's C version grows its buffer with the same
-# start-at-8/double growth object_array_push() itself uses, and
-# string_build's C version reallocates a fresh buffer per concatenation
-# rather than a smarter growable one, mirroring stdlib.concat's own
-# always-allocate-fresh semantics). The point is to measure the cost of
-# paweli's runtime for a given algorithm, not to pit an optimal C program
-# against a naive paweli one.
+# Compares run time across paweli's three run forms (.pw source, .paw
+# bytecode, --bin executable) and a hand-written C version of the same
+# program, for every benchmark under bench/pw/.
+
+# Each C file (bench/c/<name>.c) uses the same algorithm and the same
+# allocation strategy as its .pw version. array_sort grows its buffer
+# from 8 by doubling, as object_array_push() does. string_build
+# allocates a new buffer for every concatenation, as stdlib.concat
+# does. This measures the cost of paweli's runtime for one algorithm.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

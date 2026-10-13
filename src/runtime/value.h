@@ -24,7 +24,7 @@ typedef struct {
 	} as;
 } value_t;
 
-static inline value_t value_null(void) {
+static inline value_t value_null() {
 	value_t value;
 
 	value.type = VAL_NULL;
@@ -100,9 +100,8 @@ static inline obj_t *value_as_obj(value_t value) {
 	return value.as.obj;
 }
 
-/* Truthiness for conditions. null and false are falsey. Everything else,
-   including 0 and 0.0, is truthy. Only nullability collapses into
-   boolean context; numeric zero stays truthy. */
+/* Truthiness for conditions. null and false are falsey. Everything
+   else is truthy, including 0 and 0.0. */
 static inline bool value_is_falsey(value_t value) {
 	return value_is_null(value) || (value_is_bool(value) && !value_as_bool(value));
 }

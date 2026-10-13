@@ -1,12 +1,10 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 #include "output.h"
+#include "platform/platform.h"
 #include "project/manifest.h"
 #include "runtime/vm.h"
 #include "version.h"
@@ -15,12 +13,11 @@ static bool color_enabled(FILE *stream);
 static void vprint_message(FILE *stream, const char *color, const char *prefix, const char *format, va_list args);
 
 static bool color_enabled(FILE *stream) {
-	return (getenv("NO_COLOR") == NULL) && isatty(fileno(stream));
+	return (getenv("NO_COLOR") == NULL) && platform_stream_is_tty(stream);
 }
 
-/* Shared by print_error/print_warning/print_success: writes `prefix`
-   in `color` (already bold, e.g. "\x1b[1;31m") followed by the
-   formatted message and a newline, to `stream`. */
+/* Writes prefix in color, then the formatted message and a newline, to
+   stream. */
 static void vprint_message(FILE *stream, const char *color, const char *prefix, const char *format, va_list args) {
 	bool color_on;
 
@@ -54,7 +51,7 @@ void print_success(const char *format, ...) {
 	va_end(args);
 }
 
-void print_version(void) {
+void print_version() {
 	bool color;
 	const char *reset;
 	const char *bold;
@@ -70,7 +67,7 @@ void print_version(void) {
 	printf("%s%spaweli%s %s %s(%s)%s\n", bold, lime, reset, PAWELI_VERSION_STRING, dim, PAWELI_BUILD_TYPE, reset);
 }
 
-void print_usage(void) {
+void print_usage() {
 	bool color;
 	const char *reset;
 	const char *bold;

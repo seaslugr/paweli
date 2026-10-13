@@ -17,13 +17,11 @@ typedef enum {
 	OP_SET_LOCAL,
 	OP_GET_GLOBAL,
 	OP_DEFINE_GLOBAL,
-	// OP_SET_GLOBAL <name-constant-index>: pops TOS and stores it under
-	// this name in the current function's globals table. Encoded like
-	// OP_GET_GLOBAL (name-keyed, via emit_name_op_str()), not like
-	// OP_SET_LOCAL (frame-slot-keyed). A global has no fixed stack
-	// position. Only ever emitted for a name already registered by
-	// register_globals(), so there is no "undefined global" case to
-	// handle at runtime.
+	// OP_SET_GLOBAL <name-constant-index>: stores the top of the stack
+	// under this name in the current function's globals table. It is
+	// keyed by name like OP_GET_GLOBAL, since a global has no stack slot.
+	// The compiler only emits it for a registered global, so there is no
+	// "undefined global" case at runtime.
 	OP_SET_GLOBAL,
 
 	OP_GET_PROPERTY,
@@ -33,12 +31,9 @@ typedef enum {
 	OP_SET_INDEX,
 
 	// OP_STRUCT <name-constant-index> <field-count>: pops field-count
-	// values (in the struct's declared field order) and pushes a new
-	// struct instance. OP_GET_FIELD/OP_SET_FIELD <field-index> access a
-	// field by a fixed index resolved at compile time. Unlike
-	// OP_GET_PROPERTY (name-based, modules only), a struct's field
-	// layout is always known statically, so there is no name lookup or
-	// type check left to do at runtime.
+	// values in declared field order and pushes a new struct instance.
+	// OP_GET_FIELD and OP_SET_FIELD <field-index> use an index resolved at
+	// compile time, with no name lookup or type check at runtime.
 	OP_STRUCT,
 	OP_GET_FIELD,
 	OP_SET_FIELD,
@@ -55,12 +50,10 @@ typedef enum {
 	OP_DIVIDE,
 	OP_MODULO,
 
-	// Int-only; a float operand to any of these six is a runtime error
-	// (vm::bitwise-type-mismatch) rather than promoted, unlike
-	// OP_ADD/OP_SUBTRACT/OP_MULTIPLY/OP_DIVIDE. OP_SHIFT_LEFT/
-	// OP_SHIFT_RIGHT additionally reject a shift amount outside
-	// [0, 63] (vm::shift-amount-out-of-range) instead of leaving it as
-	// undefined behavior in the underlying C shift.
+	// Int only. A float operand to any of these six is a runtime error
+	// (vm::bitwise-type-mismatch). The two shifts also reject an amount
+	// outside [0, 63] (vm::shift-amount-out-of-range), which would be
+	// undefined behavior in C.
 	OP_BIT_AND,
 	OP_BIT_OR,
 	OP_BIT_XOR,
@@ -71,13 +64,10 @@ typedef enum {
 	OP_NEGATE,
 	OP_BIT_NOT,
 
-	// OP_DUP_N <count byte>: duplicates the top `count` stack values as a
-	// contiguous block, preserving their order (`[a, b] -> [a, b, a, b]`
-	// for count 2). Used by compiler.c's compound-assignment compilation
-	// (`arr[i] += x`, `s.f += x`) to read an index/member target's
-	// current value without re-evaluating the object/index
-	// sub-expressions a second time, which would double any side effect
-	// they have.
+	// OP_DUP_N <count>: duplicates the top `count` stack values as one
+	// block, in order: `[a, b] -> [a, b, a, b]` for count 2. Compound
+	// assignment (`arr[i] += x`, `s.f += x`) uses it to read the target's
+	// current value without evaluating the object and index twice.
 	OP_DUP_N,
 
 	OP_JUMP,
@@ -85,23 +75,20 @@ typedef enum {
 	OP_LOOP,
 
 	// OP_CLOSURE <function-constant-idx> <upvalue-count> [<is_local> <index>]*:
-	// the only variable-length instruction in this chunk format. Pushes a
-	// new closure wrapping the given (already fully compiled)
-	// obj_function_t, resolving each upvalue descriptor against the
-	// *currently executing* frame. is_local true means "capture
-	// frame->slots[index]" (a local of the immediately enclosing
-	// function), false means "reuse frame->closure->upvalues[index]"
-	// (an upvalue of the enclosing function itself, for a closure nested
-	// more than one level deep). OP_GET_UPVALUE/OP_SET_UPVALUE
-	// <index> read/write *frame->closure->upvalues[index]->location;
-	// both are only ever emitted inside a nested fn's own chunk, which
-	// can only ever run as a closure, so frame->closure is never NULL
-	// there. OP_CLOSE_UPVALUE closes (see obj_upvalue_t) whatever open
-	// upvalue points at the current stack top, then pops it. Emitted
-	// in place of OP_POP wherever a captured local's scope ends normally
-	// (end_scope()/emit_pop_to_depth() in compiler.c); an early exit via
-	// `return` instead closes every upvalue still open in the whole
-	// frame in one step, from OP_RETURN's own handler in vm.c.
+	// the only variable-length instruction. Pushes a new closure over the
+	// given compiled function and resolves each upvalue descriptor against
+	// the running frame. With is_local set it captures frame->slots[index].
+	// Otherwise it reuses frame->closure->upvalues[index], for a closure
+	// nested more than one level deep.
+	//
+	// OP_GET_UPVALUE and OP_SET_UPVALUE <index> read and write
+	// *frame->closure->upvalues[index]->location. They only appear in a
+	// nested fn's chunk, which always runs as a closure.
+	//
+	// OP_CLOSE_UPVALUE closes the open upvalue that points at the stack
+	// top, then pops it. It replaces OP_POP where a captured local's scope
+	// ends. A `return` closes every open upvalue of the frame at once, in
+	// the OP_RETURN handler.
 	OP_CLOSURE,
 	OP_GET_UPVALUE,
 	OP_SET_UPVALUE,
@@ -110,27 +97,18 @@ typedef enum {
 	OP_CALL,
 	OP_RETURN,
 
-	// OP_TRY_CALL <catch-target, u16 forward offset>: pops a 0-arg
-	// closure (compiled from a try-block's body by compile_try_expr(),
-	// the same OP_CLOSURE mechanism a lambda already uses) and calls it
-	// reentrantly, the same call_value()-plus-nested-run() pattern
-	// vm_call_value() already established for a native calling back
-	// into paweli, just invoked from inside the bytecode dispatch loop
-	// itself instead of from C. On success: pushes the closure's return
-	// value and falls through to the very next instruction (normally an
-	// OP_JUMP skipping over the catch region). On failure: closes every
-	// upvalue opened by the (possibly many) frames the reentrant call
-	// pushed, unwinds vm->frame_count/stack_top back to where they were
-	// before this instruction ran, pushes the failure's message as a
-	// string, and jumps forward by the offset, landing at the start of
-	// the compiled catch-handling code.
+	// OP_TRY_CALL <catch-target, u16 forward offset>: pops a closure with
+	// no parameters, compiled from a try block by compile_try_expr(), and
+	// calls it reentrantly. On success it pushes the return value and
+	// falls through, normally to an OP_JUMP over the catch region. On
+	// failure it closes the upvalues of every frame the call pushed,
+	// restores frame_count and stack_top, pushes the failure message as a
+	// string, and jumps forward by the offset to the catch code.
 	OP_TRY_CALL,
 
-	// Pops a string and raises it as a catchable runtime error (code
-	// "user::thrown"), propagating exactly like any other vm::* runtime
-	// error: caught by an enclosing OP_TRY_CALL's reentrant run(), or
-	// uncaught and reported at the top level the same way a division by
-	// zero already is.
+	// Pops a string and raises it as a runtime error with code
+	// "user::thrown". It propagates like any vm::* error: an enclosing
+	// OP_TRY_CALL catches it, or it is reported at the top level.
 	OP_THROW,
 } opcode_t;
 
@@ -145,31 +123,22 @@ typedef struct {
 	size_t constants_count;
 	size_t constants_capacity;
 
-	// Per-local-slot register-allocation eligibility, populated once by
-	// compiler.c at the end of compiling this function's body (see
-	// note_local_reg_slot()'s own comment for the eligibility rule) and
-	// consumed by src/jit/jit_compile.c. local_reg_eligible[i] is only
-	// meaningful when i < local_slot_count; local_reg_types[i]
-	// (VAL_INT/VAL_FLOAT/VAL_BOOL for a scalar local, or VAL_OBJ for a
-	// string/struct/array/closure local -- see
-	// jit_compile.c's emit_op_get_local() for how a VAL_OBJ-typed
-	// binding's logical null-vs-real-object tag gets reconstructed at
-	// runtime from the payload, unlike a scalar's permanently-fixed
-	// tag) and local_reg_decl_end[i] (the
-	// bytecode offset right after this local's own declaration. See
-	// compiler_t's own comment on why the JIT needs this, since a
-	// declaration is never a dedicated opcode of its own) are only
-	// meaningful when local_reg_eligible[i] is true. local_reg_dead_at[i]
-	// (the bytecode offset right after this local's own scope-closing
-	// pop, or (size_t)-1 if it never explicitly closes before the
-	// function returns) is meaningful only when local_reg_types[i] ==
-	// VAL_OBJ; a scalar binding's tag is permanently fixed once baked,
-	// so its memory cell needs no such live-window tracking the way an
-	// object binding's does (see jit_compile.c's emit_gc_check()). All
-	// NULL/0 for a
-	// chunk with no locals at all (or one that was never routed through
-	// the finalization step, e.g. the top-level "<script>" chunk, which
-	// the JIT never compiles regardless).
+	// Register eligibility per local slot. The compiler fills these in
+	// after it compiles the function body (see
+	// compiler_note_local_reg_slot() for the rule). The JIT reads them.
+	//
+	// local_reg_eligible[i] is valid for i < local_slot_count. The other
+	// three are valid when it is true:
+	// - local_reg_types[i] is VAL_INT, VAL_FLOAT, or VAL_BOOL for a
+	//   scalar, and VAL_OBJ for a string, struct, array, or closure.
+	// - local_reg_decl_end[i] is the bytecode offset right after the
+	//   local's declaration.
+	// - local_reg_dead_at[i] is the offset right after its scope-closing
+	//   pop, or (size_t)-1 if it lives until the function returns. Only
+	//   used for VAL_OBJ (see jit_emit_gc_check()).
+	//
+	// All are NULL or 0 for a chunk with no locals and for the "<script>"
+	// chunk, which the JIT never compiles.
 	bool *local_reg_eligible;
 	value_type_t *local_reg_types;
 	size_t *local_reg_decl_end;

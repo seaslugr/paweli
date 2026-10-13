@@ -23,4 +23,6 @@ Its size and startup cost show that. Expect a few hundred KB to a few MB, depend
 
 The `paweli` binary you run `build --bin` from matters. A Debug build (AddressSanitizer, `-fanalyzer` overhead, unstripped symbols) makes a large, slow executable. A Release build makes a small, fast one.
 
-There is no cross-compilation. The executable only runs on the same OS and architecture as the `paweli` binary that built it. Currently, that means ELF (Linux) only.
+There is no cross-compilation. The executable only runs on the same OS and architecture as the `paweli` binary that built it. A Linux `paweli` makes a Linux executable, and `paweli.exe` makes a Windows one.
+
+On Windows, `--bin hello` writes `hello.exe`. The `.exe` is added for you.

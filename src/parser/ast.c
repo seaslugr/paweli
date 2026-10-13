@@ -11,10 +11,9 @@ static void free_type_ref(type_ref_t *type);
 static void print_indent(FILE *out, int depth);
 static void dump_node(const ast_node_t *node, FILE *out, int depth);
 
-/* Appends text (length characters, or the whole NUL-terminated string if
-   length is negative) at offset, clamped to never write past
-   buffer_size. Returns the new offset. Debug-output-only, so silent
-   truncation on a pathologically long type is an acceptable outcome. */
+/* Appends text at offset and returns the new offset. A negative length
+   means text is NUL-terminated. Writes never pass buffer_size. A very
+   long type is cut short, which is fine for debug output. */
 static size_t type_ref_append(char *buffer, size_t buffer_size, size_t offset, const char *text, int length) {
 	int written;
 
@@ -29,10 +28,9 @@ static size_t type_ref_append(char *buffer, size_t buffer_size, size_t offset, c
 	return offset > buffer_size ? buffer_size : offset;
 }
 
-/* Recursive (a function type_ref's own param/return types can themselves
-   be function types), so building the text has to be careful never to
-   go through type_ref_name()'s single reused buffer mid-construction.
-   everything here writes into the caller's buffer at a running offset. */
+/* Recursive, since a function type's parameter and return types can be
+   function types. It writes into the caller's buffer and never uses
+   the static buffer of type_ref_name(). */
 static size_t append_type_ref(char *buffer, size_t buffer_size, size_t offset, type_ref_t type) {
 	size_t i;
 
@@ -62,9 +60,7 @@ static size_t append_type_ref(char *buffer, size_t buffer_size, size_t offset, t
 	return offset;
 }
 
-/* Reused static buffer: fine for this project's single-threaded,
-   sequential dump usage, but not reentrant. Do not call this twice and
-   hold onto both results at once. */
+/* Returns a static buffer. Do not hold two results at once. */
 static const char *type_ref_name(type_ref_t type) {
 	static char buffer[128];
 
@@ -72,9 +68,8 @@ static const char *type_ref_name(type_ref_t type) {
 	return buffer;
 }
 
-/* Frees function_ref (and, recursively, every function_ref nested in its
-   own param/return types), the one heap-owned piece a type_ref_t can
-   carry. A no-op for every other base_type, where function_ref is NULL. */
+/* Frees function_ref and every function_ref nested inside it. Does
+   nothing for other base types, where function_ref is NULL. */
 static void free_type_ref(type_ref_t *type) {
 	size_t i;
 
@@ -132,7 +127,7 @@ void ast_list_free(ast_list_t *list) {
 	list->capacity = 0;
 }
 
-ast_node_t *ast_new_program(void) {
+ast_node_t *ast_new_program() {
 	ast_node_t *node = ast_alloc(AST_PROGRAM, 1, 1);
 
 	node->as.program.module_def = NULL;

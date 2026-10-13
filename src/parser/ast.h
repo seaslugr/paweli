@@ -57,17 +57,13 @@ typedef struct {
 	size_t capacity;
 } ast_list_t;
 
-// A declared type: one of the base type keywords (TOKEN_INT, TOKEN_FLOAT,
-// TOKEN_STRING, TOKEN_BOOL), TOKEN_IDENTIFIER naming a struct (in which
-// case struct_name holds the identifier token), or TOKEN_FN naming a
-// function type (in which case function_ref holds its param/return
-// shape), optionally suffixed with one or more `[]` for "array of" that
-// type (e.g. `int[]`, `Point[][]`, `fn(int)->int[]`). array_depth counts
-// the trailing `[]` pairs, so `int[][]` is `int` with array_depth 2.
-// `[]` always binds to the nearest preceding type (the `fn(...) -> T`
-// return type, when one is written), so a nested array is always a
-// depth count. There is still no way to spell "array of function
-// type", which would need a grouping syntax the grammar lacks.
+// A declared type. base_type is a type keyword (TOKEN_INT,
+// TOKEN_FLOAT, TOKEN_STRING, TOKEN_BOOL), TOKEN_IDENTIFIER for a
+// struct (struct_name holds the name), or TOKEN_FN for a function type
+// (function_ref holds its shape). array_depth counts trailing `[]`
+// pairs: `int[][]` is `int` with depth 2. `[]` binds to the nearest
+// type before it, which in a function type is the return type. So an
+// array of functions cannot be written.
 typedef struct type_ref type_ref_t;
 typedef struct function_type_ref function_type_ref_t;
 
@@ -75,21 +71,16 @@ struct type_ref {
 	token_type_t base_type;
 	size_t array_depth;
 	token_t struct_name;
-	// Non-NULL iff base_type == TOKEN_FN. Heap-allocated (ast_free()
-	// frees it) rather than embedded, since type_ref_t appears by value
-	// all over the AST (params, var_decl, struct fields, ...) and most
-	// of those never need it.
+	// Non-NULL only when base_type == TOKEN_FN. Heap-allocated, since
+	// type_ref_t is stored by value all over the AST and most uses do not
+	// need it. ast_free() frees it.
 	function_type_ref_t *function_ref;
 };
 
 // `fn(param_types...) -> return_type`, or `fn(param_types...)` with
-// has_return_type false. param_types holds bare types only, no names.
-// this describes a type, not a parameter list (see AST_FUNCTION_DECL's
-// own `params`, an ast_list_t of AST_PARAM nodes, for that). Recursive
-// by construction: a function type's own return type can itself be a
-// function type (`fn() -> fn(int) -> int`, a factory returning a
-// factory), which is why return_type is a plain type_ref_t and not
-// restricted to a base type.
+// has_return_type false. param_types holds types only, with no names.
+// The return type can be a function type, as in
+// `fn() -> fn(int) -> int`.
 struct function_type_ref {
 	type_ref_t *param_types;
 	size_t param_count;
@@ -104,25 +95,18 @@ struct ast_node {
 
 	union {
 		struct {
-			// At most one, must precede every `imports` entry (enforced by
-			// the parser, see parser_parse_program()). NULL for a file with
-			// no `#moduledef`.
+			// At most one, and it comes before every import (see
+			// parser_parse_program()). NULL for a file with no `#moduledef`.
 			ast_node_t *module_def;
-			// Zero or more AST_MODULE_IMPORT nodes, one per `#module` line.
-			// A moduledef file can carry its own imports now (that's what
-			// makes a transitive import chain possible), unlike the old
-			// single-directive design.
+			// One AST_MODULE_IMPORT node per `#module` line. A moduledef file can
+			// have imports too.
 			ast_list_t imports;
 			ast_list_t functions;
 			ast_list_t structs;
-			// Top-level global variable declarations (AST_VAR_DECL nodes,
-			// the exact same node a local `type name = expr;` produces;
-			// see var_decl below; the node itself carries no
-			// function-body-specific assumptions). compiler.c's
-			// register_globals() walks this before collect_signatures()
-			// so a function body can forward-reference a global declared
-			// later in the same file, the same guarantee functions
-			// already give each other.
+			// Top-level global variable declarations. They are AST_VAR_DECL nodes,
+			// the same node a local declaration uses. The compiler registers them
+			// before it collects signatures, so a function can use a global
+			// declared later in the file.
 			ast_list_t globals;
 		} program;
 
@@ -140,15 +124,13 @@ struct ast_node {
 			token_t name;
 			ast_list_t params;
 			ast_node_t *body;
-			// Top-level-only (see parser_parse_program()): a nested fn's
-			// function_decl always has an empty list, since parse_statement()
-			// never looks for a leading '@'. Items are AST_DECORATOR nodes.
+			// AST_DECORATOR nodes. Only a top-level fn can have any (see
+			// parser_parse_program()).
 			ast_list_t decorators;
 		} function_decl;
 
-		// Reused for both function parameters (default_value always NULL)
-		// and struct fields (default_value set when the field declares
-		// `= expr`, NULL when the field is required at construction).
+		// Used for function parameters, where default_value is NULL, and for
+		// struct fields, where it is the `= expr` if the field has one.
 		struct {
 			type_ref_t type;
 			token_t name;
@@ -187,13 +169,11 @@ struct ast_node {
 			ast_node_t *body;
 		} for_stmt;
 
-		// `for (type name : array_expr) body`, iterating array_expr's
-		// elements (or a string's characters). Unlike the range form
-		// (`for (type name : a..b)`), which desugars entirely at parse
-		// time into an ordinary for_stmt, this needs a real AST node:
-		// array_expr's element type is not known until it is
-		// type-checked, so the compiler has to do this desugaring
-		// itself, see compile_foreach_stmt() in compiler.c.
+		// `for (type name : array_expr) body`, over the elements of an array
+		// or the characters of a string. The range form is rewritten into a
+		// for_stmt at parse time. This form needs its own node, since the
+		// element type is only known to the compiler (see
+		// compile_foreach_stmt()).
 		struct {
 			type_ref_t type;
 			token_t name;
@@ -216,13 +196,9 @@ struct ast_node {
 		struct {
 			ast_node_t *target;
 			ast_node_t *value;
-			// TOKEN_EQUAL for plain `=`; one of the ten TOKEN_*_EQUAL
-			// compound-assignment tokens (TOKEN_PLUS_EQUAL, ...) otherwise.
-			// compiler.c's compile_assign_expr() branches on this per
-			// target kind to emit a read-modify-write sequence instead of
-			// desugaring at parse time, which would double-evaluate an
-			// index/member target's sub-expressions (e.g. `arr[f()] += 1`
-			// calling f() twice).
+			// TOKEN_EQUAL for `=`, or one of the ten TOKEN_*_EQUAL compound
+			// tokens. compile_assign_expr() emits a read-modify-write sequence for
+			// those. Rewriting `arr[f()] += 1` at parse time would call f() twice.
 			token_type_t op;
 		} assign_expr;
 
@@ -264,26 +240,17 @@ struct ast_node {
 			ast_list_t elements;
 		} array_literal;
 
-		// Covers both spellings: the terse postfix `expr catch(TYPE
-		// fallback)` and the full `try { ... } catch(...) { ... }` block
-		// The former parses directly into this same shape
-		// (try_body synthesized as a one-statement block holding an
-		// implicit `return expr;`, has_binding false, catch_body NULL),
-		// so the compiler only ever has one shape to handle.
+		// Both spellings: the postfix `expr catch(TYPE fallback)` and the full
+		// `try { ... } catch(...) { ... }`. The postfix form has a try_body of
+		// one implicit `return expr;`, no binding, and a NULL catch_body.
 		//
-		// try_body is an AST_BLOCK. In expression position, its last
-		// statement, if written as a bare expression with no trailing
-		// `;`, is parsed as an implicit `return`. This is the one place in the
-		// grammar a semicolon is ever optional, see parse_primary()'s
-		// TOKEN_TRY case.
+		// try_body is an AST_BLOCK. As an expression, its last statement may
+		// be a bare expression with no `;`, parsed as an implicit `return`.
 		//
-		// has_binding/has_fallback are independent: a statement-position
-		// try/catch commonly has a binding and no fallback (nothing
-		// consumes the value); the terse postfix form always has a
-		// fallback and no binding; the full "unified" form has both.
-		// catch_body is NULL only for the postfix form; every other
-		// combination requires at least an empty `{ }`, since a catch
-		// clause with neither a fallback nor a body would do nothing.
+		// has_binding and has_fallback are independent. A statement-form
+		// try/catch usually has a binding and no fallback. The postfix form
+		// has a fallback and no binding. catch_body is NULL only for the
+		// postfix form.
 		struct {
 			ast_node_t *try_body;
 
@@ -298,12 +265,9 @@ struct ast_node {
 			ast_node_t *catch_body;
 		} try_expr;
 
-		// Fields are AST_PARAM nodes (type, name, optional default_value).
-		// functions are AST_FUNCTION_DECL nodes, same shape a top-level or
-		// nested fn already uses (their own `decorators` list is always
-		// empty here; parse_decorator() is only ever invoked from
-		// parser_parse_program()'s own loop, never from here). Called only
-		// as `TypeName.name(args)`; see compiler.c's compile_struct_call().
+		// fields are AST_PARAM nodes. functions are AST_FUNCTION_DECL nodes
+		// with an empty decorators list. A struct function is called only as
+		// `TypeName.name(args)` (see compile_struct_call()).
 		struct {
 			token_t name;
 			ast_list_t fields;
@@ -311,14 +275,12 @@ struct ast_node {
 		} struct_decl;
 
 		// `TypeName { field: value, ... }`, or a bare `{ field: value, ... }`
-		// (has_type_name false, type_name unset) when the type is meant to
-		// be inferred from context: a var_decl's declared type, a
-		// return's declared type, an assignment's target, a call argument
-		// with only one candidate overload, an array literal's element
-		// type, or an enclosing struct literal's own field type. Fields
-		// not listed here fall back to their struct declaration's default
-		// (a compile error if the struct declares no default for that
-		// field).
+		// with has_type_name false. The bare form takes its type from context:
+		// a declared variable type, a return type, an assignment target, a
+		// call argument with one candidate overload, an array literal's
+		// element type, or the field type of an enclosing struct literal. A
+		// field that is not listed takes its declared default. If it has none,
+		// that is a compile error.
 		struct {
 			token_t type_name;
 			bool has_type_name;
@@ -330,9 +292,8 @@ struct ast_node {
 			ast_node_t *value;
 		} struct_field_init;
 
-		// `@name` or `@name("...")`, only ever attached to a top-level
-		// function_decl's own decorators list. arg is NULL, or an
-		// AST_STRING_LITERAL node holding the optional message.
+		// `@name` or `@name("...")` on a top-level function. arg is NULL or an
+		// AST_STRING_LITERAL node.
 		struct {
 			token_t name;
 			ast_node_t *arg;
@@ -344,7 +305,7 @@ void ast_list_init(ast_list_t *list);
 void ast_list_push(ast_list_t *list, ast_node_t *node);
 void ast_list_free(ast_list_t *list);
 
-ast_node_t *ast_new_program(void);
+ast_node_t *ast_new_program();
 ast_node_t *ast_new_module_import(token_t name, int line, int column);
 ast_node_t *ast_new_module_def(token_t name, int line, int column);
 ast_node_t *ast_new_function_decl(token_t name, bool has_return_type, type_ref_t return_type, ast_node_t *body, int line, int column);
@@ -362,11 +323,8 @@ ast_node_t *ast_new_return_stmt(ast_node_t *value, int line, int column);
 ast_node_t *ast_new_expr_stmt(ast_node_t *expression, int line, int column);
 ast_node_t *ast_new_throw_stmt(ast_node_t *value, int line, int column);
 
-// try_expr's has_binding/binding_type/binding_name/has_fallback/
-// fallback_type/fallback_expr/catch_body all default to
-// false/unset/NULL; the caller fills in whichever apply, the same
-// pattern ast_new_function_decl()'s caller already uses for
-// has_return_type/return_type.
+/* The binding, fallback, and catch_body fields start as false or NULL.
+   The caller sets the ones that apply. */
 ast_node_t *ast_new_try_expr(ast_node_t *try_body, int line, int column);
 ast_node_t *ast_new_assign_expr(ast_node_t *target, ast_node_t *value, token_type_t op, int line, int column);
 ast_node_t *ast_new_binary_expr(token_type_t op, ast_node_t *left, ast_node_t *right, int line, int column);
