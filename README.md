@@ -10,6 +10,8 @@ fn main() {
 }
 ```
 
+Book can be found [`Here`](https://seaslugr.github.io/paweli/).
+
 ## Features
 
 - Statically typed
